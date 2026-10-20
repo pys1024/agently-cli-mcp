@@ -68,6 +68,15 @@ pub enum AppError {
     #[error("{0}")]
     PathOutsideWorkdir(String),
 
+    /// A search cursor's stored filters conflict with the newly supplied ones.
+    #[error("{0}")]
+    SearchContextMismatch(String),
+
+    /// A search cursor context is missing or expired and no full query was
+    /// supplied to fall back on.
+    #[error("{0}")]
+    SearchContextRequired(String),
+
     /// A generic CLI failure with no more specific classification.
     #[error("{0}")]
     CliError(String),
@@ -92,6 +101,8 @@ impl AppError {
             AppError::ConfirmationExpired(_) => "CONFIRMATION_EXPIRED",
             AppError::ToolDisabled(_) => "TOOL_DISABLED",
             AppError::PathOutsideWorkdir(_) => "PATH_OUTSIDE_WORKDIR",
+            AppError::SearchContextMismatch(_) => "SEARCH_CONTEXT_MISMATCH",
+            AppError::SearchContextRequired(_) => "SEARCH_CONTEXT_REQUIRED",
             AppError::CliError(_) => "CLI_ERROR",
         }
     }
