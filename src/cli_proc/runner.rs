@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::cli_proc::locate;
@@ -17,6 +18,9 @@ use crate::error::AppError;
 pub struct Runner {
     bin: PathBuf,
     workdir: PathBuf,
+    /// Serializes non-watch CLI calls (spec §8: default concurrency 1). Sized
+    /// from `CliConfig.max_concurrency`; shared across clones.
+    semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 impl Runner {
@@ -35,11 +39,40 @@ impl Runner {
                 AppError::CliError(format!("cannot determine working directory: {e}"))
             })?,
         };
-        Ok(Runner { bin, workdir })
+        let permits = cfg.max_concurrency.max(1) as usize;
+        Ok(Runner {
+            bin,
+            workdir,
+            semaphore: Arc::new(tokio::sync::Semaphore::new(permits)),
+        })
     }
 
     /// Run the CLI with the given arguments and timeout, returning raw output.
+    ///
+    /// The call is serialized against other non-watch calls: the concurrency
+    /// permit is held until the child has been reaped.
     pub async fn run(&self, args: &[String], timeout: Duration) -> Result<CliResult, AppError> {
+        let _permit = self
+            .semaphore
+            .acquire()
+            .await
+            .map_err(|_| AppError::CliError("CLI concurrency semaphore closed".to_string()))?;
+        self.run_impl(args, timeout).await
+    }
+
+    /// Run the CLI without the concurrency gate. Used by the watch tool so a
+    /// long-poll never blocks ordinary mail calls.
+    pub async fn run_unserialized(
+        &self,
+        args: &[String],
+        timeout: Duration,
+    ) -> Result<CliResult, AppError> {
+        self.run_impl(args, timeout).await
+    }
+
+    /// Shared spawn/reap body used by both [`Runner::run`] and
+    /// [`Runner::run_unserialized`].
+    async fn run_impl(&self, args: &[String], timeout: Duration) -> Result<CliResult, AppError> {
         let mut cmd = match locate_windows::shape_command(&self.bin, args)? {
             CommandSpec::Direct { program, args } => {
                 let mut cmd = tokio::process::Command::new(&program);

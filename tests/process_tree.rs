@@ -98,7 +98,8 @@ async fn timeout_kills_grandchild() {
 /// Two concurrent timeouts on the single-threaded `#[tokio::test]` runtime must
 /// overlap. If termination blocked the worker with `thread::sleep`, the two
 /// 2-second grace periods would serialize; with async `tokio::time::sleep` they
-/// overlap and both return promptly.
+/// overlap and both return promptly. Uses `run_unserialized` so the mail-call
+/// concurrency gate (Task 6) does not mask the termination behavior under test.
 #[cfg(unix)]
 #[tokio::test]
 async fn concurrent_timeouts_do_not_block() {
@@ -109,8 +110,8 @@ async fn concurrent_timeouts_do_not_block() {
 
     let start = Instant::now();
     let (a, b) = tokio::join!(
-        runner.run(&[], Duration::from_millis(300)),
-        runner.run(&[], Duration::from_millis(300)),
+        runner.run_unserialized(&[], Duration::from_millis(300)),
+        runner.run_unserialized(&[], Duration::from_millis(300)),
     );
     let elapsed = start.elapsed();
 

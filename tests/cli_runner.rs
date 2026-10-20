@@ -101,3 +101,39 @@ async fn timeout_is_reported_and_kills_process() {
         .unwrap_err();
     assert_eq!(err.code(), "TIMEOUT");
 }
+
+#[tokio::test]
+async fn concurrent_calls_are_serialized() {
+    let _guard = ENV_LOCK.lock().await;
+    let dir = tempdir().unwrap();
+    let log = dir.path().join("argv.log");
+    let probe = dir.path().join("probe.log");
+    set_scenario("sleep_brief", &log);
+    unsafe {
+        std::env::set_var("FAKE_PROBE_LOG", &probe);
+    }
+
+    let runner = Runner::new(&cli_config(fake_bin())).unwrap();
+
+    // `max_concurrency` is 1, so the two calls must not overlap. The fake CLI
+    // writes a deterministic START/END marker pair around a ~300ms sleep.
+    let args_a = vec!["call-a".to_string()];
+    let args_b = vec!["call-b".to_string()];
+    let (a, b) = tokio::join!(
+        runner.run_json(&args_a, Duration::from_secs(5)),
+        runner.run_json(&args_b, Duration::from_secs(5)),
+    );
+    a.unwrap();
+    b.unwrap();
+
+    let markers: Vec<String> = std::fs::read_to_string(&probe)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    assert_eq!(
+        markers,
+        vec!["START", "END", "START", "END"],
+        "serialized calls must not overlap (got {markers:?})"
+    );
+}

@@ -89,6 +89,26 @@ fn main() {
             thread::sleep(Duration::from_secs(30));
             exit(0);
         }
+        "sleep_brief" => {
+            // Deterministic overlap probe: append START, sleep ~300ms, append
+            // END. Serialized calls produce START,END,START,END; overlapping
+            // calls produce START,START,END,END.
+            if let Ok(log) = env::var("FAKE_PROBE_LOG")
+                && let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&log)
+            {
+                let _ = writeln!(f, "START");
+                let _ = f.flush();
+            }
+            thread::sleep(Duration::from_millis(300));
+            if let Ok(log) = env::var("FAKE_PROBE_LOG")
+                && let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&log)
+            {
+                let _ = writeln!(f, "END");
+                let _ = f.flush();
+            }
+            println!("{SUCCESS_LIST}");
+            exit(0);
+        }
         "spawn_child" => {
             // Optional coordination for platforms that must attach the child
             // to a Job Object *after* spawn (Windows): wait for a "go" file so
