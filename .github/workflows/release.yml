@@ -1,0 +1,126 @@
+name: Release
+
+# Build the five supported targets, package each as a single-binary archive,
+# generate checksums and an SBOM, and publish a GitHub Release.
+#
+# No code signing is performed here. Linux/macOS binaries are stripped; the
+# Windows MSVC build links against the static CRT (`+crt-static`) so no
+# VC++ Redistributable is required.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            archive_ext: tar.gz
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            archive_ext: tar.gz
+          - runner: macos-13
+            target: x86_64-apple-darwin
+            archive_ext: tar.gz
+          - runner: macos-14
+            target: aarch64-apple-darwin
+            archive_ext: tar.gz
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive_ext: zip
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install musl toolchain
+        if: contains(matrix.target, 'musl')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Build release
+        run: cargo build --release --target ${{ matrix.target }}
+        env:
+          # Static CRT on Windows MSVC so the binary has no VC++ Redistributable
+          # dependency. Harmless on other platforms.
+          RUSTFLAGS: ${{ matrix.archive_ext == 'zip' && '-C target-feature=+crt-static' || '' }}
+
+      - name: Strip binary (non-Windows)
+        if: matrix.archive_ext == 'tar.gz'
+        run: strip "target/${{ matrix.target }}/release/agently-cli-mcp"
+
+      - name: Archive (Unix)
+        if: matrix.archive_ext == 'tar.gz'
+        shell: bash
+        run: |
+          cd "target/${{ matrix.target }}/release"
+          tar -czf "agently-cli-mcp-${{ matrix.target }}.tar.gz" agently-cli-mcp
+          mv "agently-cli-mcp-${{ matrix.target }}.tar.gz" "$GITHUB_WORKSPACE/"
+
+      - name: Archive (Windows)
+        if: matrix.archive_ext == 'zip'
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path "target/${{ matrix.target }}/release/agently-cli-mcp.exe" `
+            -DestinationPath "agently-cli-mcp-${{ matrix.target }}.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agently-cli-mcp-${{ matrix.target }}
+          path: agently-cli-mcp-${{ matrix.target }}.*
+          if-no-files-found: error
+
+  release:
+    name: create release
+    runs-on: ubuntu-24.04
+    needs: build
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum agently-cli-mcp-* > checksums.txt
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: ./
+          format: cyclonedx-json
+          output: dist/agently-cli-mcp-sbom.cdx.json
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

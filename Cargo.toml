@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
+description = "MCP server wrapping the npm-installed agently-cli"
+repository = "https://github.com/pys1024/agently-cli-mcp"
+readme = "README.md"
 
 [[bin]]
 name = "agently-cli-mcp"
