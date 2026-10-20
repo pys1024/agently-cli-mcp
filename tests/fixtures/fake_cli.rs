@@ -21,6 +21,17 @@ const ERROR_404: &str =
 const EVENT_1: &str = r#"{"event":"arrived","id":"msg_1"}"#;
 const EVENT_2: &str = r#"{"event":"arrived","id":"msg_2"}"#;
 
+/// Poll until `path` exists, giving up after a few seconds.
+fn wait_for_file(path: &str) {
+    let path = std::path::Path::new(path);
+    for _ in 0..200 {
+        if path.exists() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
 fn main() {
     let scenario = env::var("FAKE_SCENARIO").unwrap_or_else(|_| "success_list".to_string());
 
@@ -67,13 +78,23 @@ fn main() {
             exit(0);
         }
         "spawn_child" => {
+            // Optional coordination for platforms that must attach the child
+            // to a Job Object *after* spawn (Windows): wait for a "go" file so
+            // the grandchild is guaranteed to be created inside the job.
+            if let Ok(go) = env::var("FAKE_SPAWN_GO") {
+                wait_for_file(&go);
+            }
             let exe = env::current_exe().expect("current exe");
             let child = std::process::Command::new(exe)
                 .env("FAKE_SCENARIO", "sleep")
                 .env_remove("FAKE_ARGV_LOG")
                 .spawn()
                 .expect("spawn grandchild");
-            println!("{}", child.id());
+            let pid = child.id();
+            if let Ok(path) = env::var("FAKE_GRANDCHILD_PID") {
+                let _ = std::fs::write(&path, pid.to_string());
+            }
+            println!("{pid}");
             let _ = std::io::stdout().flush();
             thread::sleep(Duration::from_secs(30));
             exit(0);

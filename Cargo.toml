@@ -44,7 +44,7 @@ subtle = "2"
 nix = { version = "0.30", features = ["signal", "process"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading"] }
+windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
 [dev-dependencies]
 rmcp = { version = "=3.5.1", features = ["client", "transport-streamable-http-client-reqwest"] }
@@ -52,3 +52,9 @@ tokio = { version = "1.54", features = ["full"] }
 assert_cmd = "2"
 predicates = "3"
 tempfile = "3"
+
+[target.'cfg(unix)'.dev-dependencies]
+nix = { version = "0.30", features = ["signal", "process"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_System_Threading"] }

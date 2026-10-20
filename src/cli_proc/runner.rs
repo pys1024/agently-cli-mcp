@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use crate::cli_proc::locate;
 use crate::cli_proc::locate_windows::{self, CommandSpec};
+use crate::cli_proc::process;
 use crate::cli_proc::status;
 use crate::cli_proc::{CliOutcome, CliResult};
 use crate::config::CliConfig;
@@ -54,22 +55,29 @@ impl Runner {
         cmd.current_dir(&self.workdir)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+            .stderr(Stdio::piped());
+        process::configure(&mut cmd);
 
         let child = cmd
             .spawn()
             .map_err(|e| AppError::CliError(format!("failed to spawn CLI: {e}")))?;
 
+        // Holds the process-group/Job Object needed to kill the whole tree on
+        // timeout or if this future is dropped/cancelled.
+        let mut tree = process::ProcessTree::attach(&child)?;
+
         let output =
             tokio::time::timeout(timeout, async move { child.wait_with_output().await }).await;
 
         match output {
-            Ok(Ok(output)) => Ok(CliResult {
-                stdout: output.stdout,
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-                exit_code: output.status.code(),
-            }),
+            Ok(Ok(output)) => {
+                tree.disarm();
+                Ok(CliResult {
+                    stdout: output.stdout,
+                    stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                    exit_code: output.status.code(),
+                })
+            }
             Ok(Err(e)) => Err(AppError::CliError(format!(
                 "failed to read CLI output: {e}"
             ))),
