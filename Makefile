@@ -18,7 +18,7 @@ endif
 
 DIST_DIR := dist
 
-.PHONY: all build test lint fmt fmt-check clippy dist clean
+.PHONY: all build test lint fmt fmt-check clippy dist dist-all clean
 
 all: build
 
@@ -50,6 +50,9 @@ else
 endif
 	@cd "$(DIST_DIR)" && sha256sum "$(ARCHIVE)" > checksums.txt
 	@echo "built $(DIST_DIR)/$(ARCHIVE)"
+
+dist-all: ## Cross-compile all five targets with cargo-zigbuild into dist/
+	./scripts/build.sh
 
 clean:
 	$(CARGO) clean

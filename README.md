@@ -319,7 +319,67 @@ make build     # cargo build --release
 make test      # cargo test --features test-fixtures
 make lint      # cargo fmt --check + clippy -D warnings
 make dist      # build + package the host-target archive + checksum into dist/
+make dist-all  # cross-compile all five targets with cargo-zigbuild into dist/
 ```
+
+### Cross-compile all targets (cargo-zigbuild)
+
+`./scripts/build.sh` builds the five release targets from one host using
+`cargo-zigbuild`:
+
+| Name | Rust target |
+|---|---|
+| `linux-x86_64` | `x86_64-unknown-linux-musl` |
+| `linux-arm64` | `aarch64-unknown-linux-musl` |
+| `darwin-x86_64` | `x86_64-apple-darwin` |
+| `darwin-arm64` | `aarch64-apple-darwin` |
+| `windows-x86_64` | `x86_64-pc-windows-gnu` |
+
+Prerequisites:
+
+```bash
+rustup target add \
+  x86_64-unknown-linux-musl aarch64-unknown-linux-musl \
+  x86_64-apple-darwin aarch64-apple-darwin \
+  x86_64-pc-windows-gnu
+
+cargo install cargo-zigbuild --locked
+# zig must be on PATH
+```
+
+Darwin targets additionally need Apple's SDK (zig does not bundle it). The
+script uses `SDKROOT` / `DARWIN_SDK`, then `xcrun --show-sdk-path` on macOS,
+then `~/MacOSX.sdk`:
+
+```bash
+export SDKROOT="$HOME/MacOSX.sdk"   # or your SDK path
+```
+
+Usage:
+
+```bash
+./scripts/build.sh                                   # all five targets
+./scripts/build.sh --targets linux-x86_64,darwin-arm64
+TARGETS=host ./scripts/build.sh                      # only the host target
+./scripts/build.sh --no-archive --no-strip           # binaries only
+./scripts/build.sh --output dist --jobs 4
+```
+
+Archives and `checksums.txt` are written to `dist/`:
+
+```text
+dist/agently-cli-mcp-x86_64-unknown-linux-musl.tar.gz
+dist/agently-cli-mcp-aarch64-unknown-linux-musl.tar.gz
+dist/agently-cli-mcp-x86_64-apple-darwin.tar.gz
+dist/agently-cli-mcp-aarch64-apple-darwin.tar.gz
+dist/agently-cli-mcp-x86_64-pc-windows-gnu.zip
+dist/checksums.txt
+```
+
+> The local cross-build uses the **GNU** Windows target because that is what
+> `cargo-zigbuild` can link from any host. Official GitHub releases are still
+> built on native runners and use **MSVC** (`x86_64-pc-windows-msvc`, static
+> CRT). Do not mix the two archive names in one release.
 
 ### Live smoke test
 
