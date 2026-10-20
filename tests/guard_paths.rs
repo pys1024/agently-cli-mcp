@@ -80,6 +80,45 @@ fn rejects_output_dir_escape() {
     assert_eq!(err.code(), "PATH_OUTSIDE_WORKDIR");
 }
 
+#[cfg(unix)]
+#[test]
+fn rejects_symlink_ancestor_for_missing_output() {
+    let (dir, root, sandbox) = setup();
+    let outside = dir.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    // link -> /outside (existing); /outside/sub does NOT exist.
+    std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+
+    let err = sandbox
+        .resolve_output_dir(Path::new("link/sub"))
+        .unwrap_err();
+    assert_eq!(err.code(), "PATH_OUTSIDE_WORKDIR");
+}
+
+#[cfg(unix)]
+#[test]
+fn rejects_dangling_symlink_ancestor() {
+    let (dir, root, sandbox) = setup();
+    let target = dir.path().join("outside").join("missing");
+    // link -> /outside/missing (dangling symlink).
+    std::os::unix::fs::symlink(&target, root.join("link")).unwrap();
+
+    let err = sandbox
+        .resolve_output_dir(Path::new("link/sub"))
+        .unwrap_err();
+    assert_eq!(err.code(), "PATH_OUTSIDE_WORKDIR");
+}
+
+#[cfg(unix)]
+#[test]
+fn resolves_dangling_symlink_that_stays_inside() {
+    let (_dir, root, sandbox) = setup();
+    std::os::unix::fs::symlink(root.join("target_inside"), root.join("link")).unwrap();
+
+    let rel = sandbox.resolve_output_dir(Path::new("link/sub")).unwrap();
+    assert_eq!(rel, PathBuf::from("target_inside").join("sub"));
+}
+
 #[test]
 fn relative_converts_absolute_inside_root() {
     let (_dir, root, sandbox) = setup();

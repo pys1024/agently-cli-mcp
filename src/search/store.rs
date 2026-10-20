@@ -27,8 +27,8 @@ pub struct SearchQuery {
     pub dir: Option<String>,
     pub after: Option<String>,
     pub before: Option<String>,
-    pub has_attachments: bool,
-    pub is_unread: bool,
+    pub has_attachments: Option<bool>,
+    pub is_unread: Option<bool>,
     pub limit: u32,
 }
 
@@ -42,9 +42,23 @@ impl SearchQuery {
             && self.dir.is_none()
             && self.after.is_none()
             && self.before.is_none()
-            && !self.has_attachments
-            && !self.is_unread
+            && self.has_attachments.is_none()
+            && self.is_unread.is_none()
             && self.limit == 0
+    }
+
+    /// Whether the query carries at least one real search filter. `limit` alone
+    /// is not a filter: it selects the page size, not which messages match.
+    pub fn is_usable(&self) -> bool {
+        self.q.is_some()
+            || self.search_in.is_some()
+            || self.from.is_some()
+            || self.to.is_some()
+            || self.dir.is_some()
+            || self.after.is_some()
+            || self.before.is_some()
+            || self.has_attachments.is_some()
+            || self.is_unread.is_some()
     }
 }
 
@@ -58,8 +72,8 @@ pub struct SearchCtx {
     pub dir: Option<String>,
     pub after: Option<String>,
     pub before: Option<String>,
-    pub has_attachments: bool,
-    pub is_unread: bool,
+    pub has_attachments: Option<bool>,
+    pub is_unread: Option<bool>,
     pub limit: u32,
     pub session_id: String,
 }
@@ -214,12 +228,12 @@ impl SearchStore {
                 }
             }
             None => {
-                if provided.is_empty() {
+                if provided.is_usable() {
+                    Ok(provided.clone())
+                } else {
                     Err(AppError::SearchContextRequired(format!(
                         "search cursor `{cursor}` context is missing or expired; provide the full query"
                     )))
-                } else {
-                    Ok(provided.clone())
                 }
             }
         }
@@ -243,7 +257,8 @@ fn has_conflict(provided: &SearchQuery, stored: &SearchCtx) -> bool {
         || (provided.dir.is_some() && provided.dir != stored.dir)
         || (provided.after.is_some() && provided.after != stored.after)
         || (provided.before.is_some() && provided.before != stored.before)
-        || (provided.has_attachments && !stored.has_attachments)
-        || (provided.is_unread && !stored.is_unread)
+        || (provided.has_attachments.is_some()
+            && provided.has_attachments != stored.has_attachments)
+        || (provided.is_unread.is_some() && provided.is_unread != stored.is_unread)
         || (provided.limit != 0 && provided.limit != stored.limit)
 }

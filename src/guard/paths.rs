@@ -4,6 +4,7 @@
 //! lexically. Inside-root absolute paths are converted back to relative paths
 //! for the CLI arguments.
 
+use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 
 use crate::error::AppError;
@@ -69,17 +70,66 @@ impl Sandbox {
     }
 
     /// Resolve an output directory that may not exist yet, returning its path
-    /// relative to the root. Existing directories are canonicalized (rejecting
-    /// symlink escapes); missing directories are checked lexically.
+    /// relative to the root. Each existing component is canonicalized and
+    /// checked against the root (rejecting symlink escapes — including a
+    /// dangling symlink — in any ancestor); only the genuinely non-existing
+    /// tail is appended lexically.
     pub fn resolve_output_dir(&self, p: &Path) -> Result<PathBuf, AppError> {
         let abs = self.absolutize(p);
-        if let Ok(canon) = std::fs::canonicalize(&abs) {
-            self.ensure_within(&canon)?;
-            return Ok(self.relative_unchecked(&canon));
-        }
         let lex = lexical_normalize(&abs);
         self.ensure_within(&lex)?;
-        Ok(self.relative_unchecked(&lex))
+
+        let rel = lex
+            .strip_prefix(&self.root)
+            .unwrap_or_else(|_| Path::new(""));
+
+        let mut resolved = self.root.clone();
+        let mut remaining: Vec<OsString> = Vec::new();
+        let mut past_end = false;
+
+        for component in rel.components() {
+            if past_end {
+                remaining.push(component.as_os_str().to_os_string());
+                continue;
+            }
+            let next = resolved.join(component.as_os_str());
+            match std::fs::canonicalize(&next) {
+                Ok(canon) => {
+                    self.ensure_within(&canon)?;
+                    resolved = canon;
+                }
+                Err(_) => {
+                    if is_symlink(&next) {
+                        // A dangling symlink: resolve its target lexically and
+                        // require it to stay within the root.
+                        let target = std::fs::read_link(&next).map_err(|e| {
+                            AppError::InvalidArgument(format!(
+                                "cannot resolve output path `{}`: {e}",
+                                p.display()
+                            ))
+                        })?;
+                        let target_abs = if target.is_absolute() {
+                            target
+                        } else {
+                            resolved.join(target)
+                        };
+                        let target_lex = lexical_normalize(&target_abs);
+                        self.ensure_within(&target_lex)?;
+                        resolved = target_lex;
+                    } else {
+                        // First non-existing component; everything below it is
+                        // created by the CLI and needs no further resolution.
+                        remaining.push(component.as_os_str().to_os_string());
+                        past_end = true;
+                    }
+                }
+            }
+        }
+
+        for name in remaining {
+            resolved.push(name);
+        }
+        Ok(self.relative_unchecked(&resolved))
     }
 
     /// Convert an absolute path that lies inside the root into a path relative
@@ -200,4 +250,12 @@ fn lexical_normalize(path: &Path) -> PathBuf {
         }
     }
     out
+}
+
+/// Whether `path` exists as a symlink (including a dangling symlink, whose
+/// `symlink_metadata` succeeds even though `canonicalize` fails).
+fn is_symlink(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
 }
