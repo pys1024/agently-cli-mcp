@@ -1,9 +1,93 @@
 //! Fake `agently-cli` binary used by integration tests.
 //!
-//! This is a placeholder scaffold; the full scenario-driven implementation is
-//! built in Task 2. It exists now so the `fake-agently-cli` bin target declared
-//! in `Cargo.toml` resolves and the workspace stays `cargo fmt`/`clippy` clean.
+//! The scenario is selected by the `FAKE_SCENARIO` environment variable. The
+//! arguments (everything after the program name) are appended as one JSON line
+//! to the file named by `FAKE_ARGV_LOG`, so tests can assert the exact argv the
+//! runner passed without shell interpolation.
+
+use std::env;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::process::exit;
+use std::thread;
+use std::time::Duration;
+
+const CONFIRM_ENVELOPE: &str = r#"{"ok":true,"data":{"confirmation_required":true,"confirmation_token":"ctk_test","summary":{"action":"send"}}}"#;
+const SUCCESS_LIST: &str =
+    r#"{"ok":true,"data":{"messages":[{"message_id":"msg_1"},{"message_id":"msg_2"}]}}"#;
+const QUEUED: &str = r#"{"ok":true,"data":{"queued":true}}"#;
+const ERROR_404: &str =
+    r#"{"ok":false,"error":{"type":"api_error","code":404,"message":"Resource not found"}}"#;
+const EVENT_1: &str = r#"{"event":"arrived","id":"msg_1"}"#;
+const EVENT_2: &str = r#"{"event":"arrived","id":"msg_2"}"#;
 
 fn main() {
-    // Task 2: read FAKE_SCENARIO, log argv, and emit the requested envelope.
+    let scenario = env::var("FAKE_SCENARIO").unwrap_or_else(|_| "success_list".to_string());
+
+    // Log argv as one JSON line.
+    let argv: Vec<String> = env::args().skip(1).collect();
+    if let Ok(log_path) = env::var("FAKE_ARGV_LOG")
+        && let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&log_path)
+    {
+        let _ = writeln!(file, "{}", serde_json::to_string(&argv).unwrap());
+        let _ = file.flush();
+    }
+
+    match scenario.as_str() {
+        "success_list" => {
+            println!("{SUCCESS_LIST}");
+            exit(0);
+        }
+        "confirm_send" => {
+            println!("{CONFIRM_ENVELOPE}");
+            exit(0);
+        }
+        "confirm_then_success" => {
+            if argv.iter().any(|a| a == "--confirmation-token") {
+                println!("{QUEUED}");
+            } else {
+                println!("{CONFIRM_ENVELOPE}");
+            }
+            exit(0);
+        }
+        "error_404" => {
+            println!("{ERROR_404}");
+            exit(6);
+        }
+        "plain_error" => {
+            eprintln!("--limit must be between 1 and 50");
+            exit(1);
+        }
+        "non_json" => {
+            println!("not json");
+            exit(0);
+        }
+        "sleep" => {
+            thread::sleep(Duration::from_secs(30));
+            exit(0);
+        }
+        "spawn_child" => {
+            let exe = env::current_exe().expect("current exe");
+            let child = std::process::Command::new(exe)
+                .env("FAKE_SCENARIO", "sleep")
+                .env_remove("FAKE_ARGV_LOG")
+                .spawn()
+                .expect("spawn grandchild");
+            println!("{}", child.id());
+            let _ = std::io::stdout().flush();
+            thread::sleep(Duration::from_secs(30));
+            exit(0);
+        }
+        "ndjson_events" => {
+            println!("{EVENT_1}");
+            println!("{EVENT_2}");
+            let _ = std::io::stdout().flush();
+            thread::sleep(Duration::from_secs(30));
+            exit(0);
+        }
+        other => {
+            eprintln!("unknown FAKE_SCENARIO: {other}");
+            exit(2);
+        }
+    }
 }

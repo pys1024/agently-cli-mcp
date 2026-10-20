@@ -1,0 +1,81 @@
+//! CLI process runner: spawn `agently-cli`, collect output, apply timeouts.
+
+use std::path::PathBuf;
+use std::process::Stdio;
+use std::time::Duration;
+
+use crate::cli_proc::locate;
+use crate::cli_proc::status;
+use crate::cli_proc::{CliOutcome, CliResult};
+use crate::config::CliConfig;
+use crate::error::AppError;
+
+/// Executes `agently-cli` subprocesses.
+#[derive(Debug, Clone)]
+pub struct Runner {
+    bin: PathBuf,
+    workdir: PathBuf,
+}
+
+impl Runner {
+    /// Resolve the CLI binary and working directory from configuration.
+    pub fn new(cfg: &CliConfig) -> Result<Runner, AppError> {
+        let bin = locate::find(cfg)?;
+        if !bin.exists() {
+            return Err(AppError::CliNotFound(format!(
+                "agently-cli not found at `{}`",
+                bin.display()
+            )));
+        }
+        let workdir = match cfg.workdir.as_deref() {
+            Some(dir) => PathBuf::from(dir),
+            None => std::env::current_dir().map_err(|e| {
+                AppError::CliError(format!("cannot determine working directory: {e}"))
+            })?,
+        };
+        Ok(Runner { bin, workdir })
+    }
+
+    /// Run the CLI with the given arguments and timeout, returning raw output.
+    pub async fn run(&self, args: &[String], timeout: Duration) -> Result<CliResult, AppError> {
+        let mut cmd = tokio::process::Command::new(&self.bin);
+        cmd.args(args)
+            .current_dir(&self.workdir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+
+        let child = cmd.spawn().map_err(|e| {
+            AppError::CliError(format!("failed to spawn `{}`: {e}", self.bin.display()))
+        })?;
+
+        let output =
+            tokio::time::timeout(timeout, async move { child.wait_with_output().await }).await;
+
+        match output {
+            Ok(Ok(output)) => Ok(CliResult {
+                stdout: output.stdout,
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                exit_code: output.status.code(),
+            }),
+            Ok(Err(e)) => Err(AppError::CliError(format!(
+                "failed to read CLI output: {e}"
+            ))),
+            Err(_elapsed) => Err(AppError::Timeout(format!(
+                "CLI timed out after {} ms",
+                timeout.as_millis()
+            ))),
+        }
+    }
+
+    /// Run the CLI and classify the result into a `CliOutcome`.
+    pub async fn run_json(
+        &self,
+        args: &[String],
+        timeout: Duration,
+    ) -> Result<CliOutcome, AppError> {
+        let result = self.run(args, timeout).await?;
+        status::classify(&result.stdout, &result.stderr, result.exit_code)
+    }
+}
