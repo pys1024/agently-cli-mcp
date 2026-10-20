@@ -13,7 +13,7 @@
 1. 注册一条 MCP 配置即可完成「看最近邮件 → 读正文 → 回信」的完整链路。
 2. MCP Server 不接触、不保存任何 OAuth 凭据；授权仍由 `agently-cli auth login` 管理。
 3. 默认配置下，任何发信/删除操作都必须经过真人确认，模型无法单方面完成。
-4. 产出**单个可执行文件**，覆盖 Windows / Darwin / Linux 的 x86_64 与 arm64 共 6 个平台，无运行时依赖。
+4. 产出**单个可执行文件**，覆盖 Linux（x86_64/arm64）、macOS（x86_64/arm64）、Windows（x86_64）共 5 个目标，无运行时依赖。
 5. 同一个二进制同时支持 **stdio** 与 **HTTP** 两种 MCP 传输。
 6. 只调用系统中由 npm 安装的 `agently-cli`，**不内嵌、不重新打包** CLI。
 7. 行为可通过命令行参数、环境变量和可选配置文件控制。
@@ -71,7 +71,7 @@
 
 ### 3.2 候选对比
 
-| 方案 | 单二进制 | 6 平台交叉编译 | MCP SDK | stdio + HTTP | 结论 |
+| 方案 | 单二进制 | 5 目标交叉编译 | MCP SDK | stdio + HTTP | 结论 |
 |---|---|---|---|---|---|
 | **Rust** | 原生静态二进制 | 需要各平台构建矩阵，但产物最干净 | 官方 `rmcp` 3.5.1 | `transport-io` + `StreamableHttpService` | **选用**（本机环境成熟） |
 | Go | 原生静态二进制 | 最简单（单机交叉编译） | 官方 `go-sdk` | 支持 | 本机无 Go 环境 |
@@ -93,7 +93,7 @@
 - 进程组/Job Object：Unix 用 `nix`，Windows 用 `windows-sys`；两者都放在 `[target.'cfg(...)'.dependencies]`，避免交叉编译时拉入不相关平台代码。
 - `schemars` 使用与 rmcp 一致的 1.2.x，避免 schema 类型不兼容。
 
-**理由**：本机 Rust 环境成熟；rmcp 3.5.1 已覆盖两种传输、MRTR、类型化工具和会话存储；Rust 的静态链接与单文件分发满足硬指标。代价是需要 6 平台构建矩阵，而不是 Go 那样的单机交叉编译。
+**理由**：本机 Rust 环境成熟；rmcp 3.5.1 已覆盖两种传输、MRTR、类型化工具和会话存储；Rust 的静态链接与单文件分发满足硬指标。代价是需要 5 目标构建矩阵，而不是 Go 那样的单机交叉编译。
 
 ## 4. 总体架构
 
@@ -522,14 +522,13 @@ struct Runner {
 |---|---|---|
 | `x86_64-unknown-linux-musl` | ubuntu-latest | 静态链接，推荐 |
 | `aarch64-unknown-linux-musl` | ubuntu-24.04-arm 或 `cross` | 静态链接 |
-| `x86_64-apple-darwin` | macos-13 | 原生链接 + codesign |
-| `aarch64-apple-darwin` | macos-14 | 原生链接 + codesign |
-| `x86_64-pc-windows-msvc` | windows-latest | `+crt-static` |
-| `aarch64-pc-windows-msvc` | windows-11-arm 或 windows-latest 交叉 | 需安装 ARM64 MSVC 工具链 |
+| `x86_64-apple-darwin` | macos-13 | 原生链接，不签名 |
+| `aarch64-apple-darwin` | macos-14 | 原生链接，不签名 |
+| `x86_64-pc-windows-msvc` | windows-latest | `+crt-static`，不签名 |
 
 - Linux 使用 musl 目标实现完全静态；若某些依赖不支持 musl，退回 gnu 并声明 glibc 最低版本。
 - Windows 使用 MSVC + `-C target-feature=+crt-static`，避免依赖 VC++ Redistributable。
-- macOS 需要 codesign + notarize，否则 Gatekeeper 拦截。
+- **不做代码签名**：macOS 不 codesign/notarize，Windows 不做 Authenticode。README 提供 Gatekeeper（`xattr -d com.apple.quarantine`）与 SmartScreen（"仍要运行"）的处理说明；企业分发可自行补签。
 - 构建脚本（Makefile 或 `cargo xtask`）统一注入版本号、strip、生成 `checksums.txt`。
 - 二进制不内嵌 CLI；运行时通过 `--cli` / `AGENTLY_CLI_PATH` / `PATH` 找到系统安装的 `agently-cli`。
 
@@ -537,7 +536,7 @@ struct Runner {
 
 只需要 Release 二进制，**不做 npm 平台包**：
 
-1. GitHub Releases：6 个压缩包（`.tar.gz` / `.zip`）+ `checksums.txt` + SBOM。
+1. GitHub Releases：5 个压缩包（`.tar.gz` / `.zip`）+ `checksums.txt` + SBOM。
 2. Docker 可选（仅 HTTP 模式）：`linux/amd64`、`linux/arm64`。
 3. `cargo install --git ... --tag ...` 作为源码安装的补充。
 
@@ -605,7 +604,7 @@ agently-cli-mcp/
 | 参数 | 环境变量 | 默认 | 说明 |
 |---|---|---|---|
 | `--transport <stdio\|http>` | `AGENTLY_MCP_TRANSPORT` | `stdio` | 传输方式 |
-| `--config <PATH>` | `AGENTLY_MCP_CONFIG` | 平台默认路径 | 配置文件 |
+| `--config <PATH>` | `AGENTLY_MCP_CONFIG` | `./agently-cli-mcp.toml` | 配置文件 |
 | `--no-config` | — | false | 忽略默认配置文件 |
 | `--print-config` | — | — | 打印合并后的配置（脱敏）后退出 |
 | `--check` | — | — | 检查 CLI、版本、授权、工作目录后退出 |
@@ -696,10 +695,11 @@ agently-cli-mcp --check --print-config
 
 - 格式：TOML。
 - 优先级：**命令行参数 > 环境变量 > 配置文件 > 内置默认值**。
-- 默认路径：
-  - Linux：`$XDG_CONFIG_HOME/agently-cli-mcp/config.toml`，否则 `~/.config/agently-cli-mcp/config.toml`
-  - macOS：`~/Library/Application Support/agently-cli-mcp/config.toml`
-  - Windows：`%APPDATA%\agently-cli-mcp\config.toml`
+- 默认路径：**进程当前目录下的 `./agently-cli-mcp.toml`**。
+  - 不读取用户主目录或系统配置目录；避免隐式配置导致「本机行为与仓库不一致」。
+  - `--config <PATH>` 可显式指定任意路径；`--no-config` 完全忽略配置文件。
+  - 默认文件不存在时静默使用内置默认值；`--config` 指定的文件不存在则报错。
+  - MCP 客户端通常在项目根目录启动，因此配置会自然跟随项目。
 - 未知字段直接报错（`#[serde(deny_unknown_fields)]`），避免拼写错误静默生效。
 - 密钥不写入配置文件：HTTP token 只支持 env / `--http-token-file`；配置中的 `http_token` 字段不提供。
 - `--print-config` 输出最终合并结果并打码密钥，便于排错。
@@ -784,18 +784,26 @@ session_idle_secs = 300
 | P3 写工具与确认 | confirm store、summary、MRTR + legacy elicitation + token/never + 5 个写工具 | 新旧协议与 token 模式通过；拒绝不发信/不删除；如实报告已读副作用；trash/delete 不被 never 绕过 |
 | P4 双传输 | stdio + Streamable HTTP + 鉴权/会话 | 两种传输跑同一套工具测试；非 loopback 无 token 拒绝启动 |
 | P5 参数与配置 | 全部 flag/env、TOML、`--print-config`、`--check` | 优先级与未知字段测试通过；示例配置可用 |
-| P6 watch 与发布 | watch 有界轮询、6 平台构建、Release | 6 个二进制可下载并通过冒烟；checksums 与 README 完整 |
+| P6 watch 与发布 | watch 有界轮询、5 目标构建、Release | 5 个二进制可下载并通过冒烟；checksums 与 README 完整 |
 
 每个阶段独立可交付、可测试，不合并成大提交。
 
-## 17. 待确认问题
+## 17. 已确认决策
 
-1. **watch 默认时长**：默认 30 秒、最大 120 秒，是否合适？还是默认 60 秒？
-2. **`--read-only` 与工具白名单**：v1 是否需要工具级禁用/白名单，还是只保留 `--read-only`？
-3. **配置文件默认位置**：是否接受各平台标准配置目录，还是希望默认放在仓库/当前目录？
-4. **Windows arm64 构建**：CI 用 `windows-11-arm` 原生 runner，还是在 windows-latest 上交叉编译？
-5. **代码签名**：macOS notarize 与 Windows 签名的证书/凭据是否可用？若没有，v1 是否接受未签名二进制并附 Gatekeeper/SmartScreen 处理说明？
-6. **legacy 客户端的确认体验**：当前默认 `elicit` 会在旧协议客户端上走 `peer.elicit`，不支持 elicitation 时降级 `token`；这个默认是否符合预期，还是希望默认 `token`？
+| 决策 | 结论 |
+|---|---|
+| 语言 | Rust + rmcp 3.5.1 |
+| 平台 | Linux x86_64/arm64、macOS x86_64/arm64、Windows x86_64，共 5 个目标 |
+| 分发 | 仅 GitHub Releases 二进制，不做 npm 平台包 |
+| 代码签名 | 不签名；README 提供 Gatekeeper/SmartScreen 处理说明 |
+| watch | 进 v1；默认 30 秒，上限 120 秒；工具描述明确说明阻塞 |
+| 配置文件 | 支持可选 TOML；默认读取当前目录 `./agently-cli-mcp.toml` |
+| 配置优先级 | 命令行 > 环境变量 > 配置文件 > 默认值 |
+| 确认默认值 | `elicit`；旧协议用 `peer.elicit`，客户端不支持时降级 `token` |
+| `--read-only` | 禁用发信/删除/改凭据；保留读类与下载；工具从 `tools/list` 省略 |
+| HTTP 默认 | 监听 `127.0.0.1:8787`；非 loopback 强制 Bearer token |
+
+无剩余阻塞性问题。下一步进入实现计划。
 
 ## 附录 A：2026-10-20 对 CLI 1.0.18 的实测记录
 
@@ -831,4 +839,4 @@ session_idle_secs = 300
 | 类型化工具 | `#[tool_router]` / `#[tool]` + `schemars` 1.2 生成 schema |
 | 协议版本 | `LATEST = 2026-07-28`，`LATEST_WITH_INITIALIZE = 2025-11-25`；默认客户端走 initialize |
 | MSRV | 1.88；本机 1.97.1 |
-| 交叉编译 | 需要 6 目标构建矩阵；Linux 用 musl，Windows 用 MSVC `+crt-static` |
+| 交叉编译 | 需要 5 目标构建矩阵；Linux 用 musl，Windows x86_64 用 MSVC `+crt-static` |
