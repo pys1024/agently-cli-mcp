@@ -122,6 +122,46 @@ fn read_only_stacks_with_allow() {
 }
 
 #[test]
+fn unknown_disable_tool_name_is_rejected() {
+    let dir = tempdir().unwrap();
+    let err = load_with_sources(
+        args(&["--disable-tool", "mail_not_a_real_tool"]),
+        &HashMap::new(),
+        dir.path(),
+    )
+    .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("unknown tool name"),
+        "unexpected message: {msg}"
+    );
+    assert!(
+        msg.contains("mail_not_a_real_tool"),
+        "unexpected message: {msg}"
+    );
+}
+
+#[test]
+fn unknown_allow_tool_name_is_rejected() {
+    let dir = tempdir().unwrap();
+    let err = load_with_sources(
+        args(&["--allow-tool", "mail_does_not_exist"]),
+        &HashMap::new(),
+        dir.path(),
+    )
+    .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("unknown tool name"),
+        "unexpected message: {msg}"
+    );
+    assert!(
+        msg.contains("mail_does_not_exist"),
+        "unexpected message: {msg}"
+    );
+}
+
+#[test]
 fn watch_max_secs_range_is_enforced() {
     let dir = tempdir().unwrap();
     let ok = load_with_sources(

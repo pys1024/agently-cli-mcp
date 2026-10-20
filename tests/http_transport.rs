@@ -104,8 +104,24 @@ async fn wait_ready(addr: SocketAddr) {
 
 /// Send a minimal raw HTTP/1.1 request over TCP and return the status line code.
 async fn raw_status(addr: SocketAddr, method: &str, path: &str, host: &str) -> StatusCode {
+    raw_status_with_headers(addr, method, path, host, &[]).await
+}
+
+/// Like [`raw_status`], with extra raw header lines (each a full `Name: value`).
+async fn raw_status_with_headers(
+    addr: SocketAddr,
+    method: &str,
+    path: &str,
+    host: &str,
+    extra_headers: &[&str],
+) -> StatusCode {
     let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-    let req = format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+    let mut req = format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\n");
+    for header in extra_headers {
+        req.push_str(header);
+        req.push_str("\r\n");
+    }
+    req.push_str("Connection: close\r\n\r\n");
     stream.write_all(req.as_bytes()).await.unwrap();
     let mut buf = Vec::new();
     stream.read_to_end(&mut buf).await.unwrap();
@@ -277,6 +293,99 @@ fn non_loopback_without_token_warns_but_starts() {
         stderr.contains("WARNING"),
         "expected a prominent non-loopback warning on stderr, got: {stderr}"
     );
+}
+
+#[tokio::test]
+async fn cors_origin_is_enforced_when_configured() {
+    let dir = tempfile::tempdir().unwrap();
+    let listen = free_port().await;
+    let mut http_cfg = default_http_cfg(listen);
+    http_cfg.cors_origins = vec!["https://app.example.com".to_string()];
+    let state = build_state(&dir, &http_cfg);
+    let (addr, ct) = spawn_server(state, http_cfg).await;
+    wait_ready(addr).await;
+
+    // A configured (allowed) Origin is accepted: the request gets past origin
+    // validation (it is not 403).
+    let allowed = raw_status_with_headers(
+        addr,
+        "GET",
+        "/mcp",
+        "127.0.0.1",
+        &["Origin: https://app.example.com"],
+    )
+    .await;
+    assert_ne!(allowed, StatusCode::FORBIDDEN, "allowed origin must pass");
+
+    // A disallowed Origin is rejected with 403.
+    let denied = raw_status_with_headers(
+        addr,
+        "GET",
+        "/mcp",
+        "127.0.0.1",
+        &["Origin: https://evil.example.com"],
+    )
+    .await;
+    assert_eq!(denied, StatusCode::FORBIDDEN);
+
+    ct.cancel();
+}
+
+#[tokio::test]
+async fn bearer_is_case_insensitive_and_whitespace_agnostic() {
+    let dir = tempfile::tempdir().unwrap();
+    let listen = free_port().await;
+    let mut http_cfg = default_http_cfg(listen);
+    http_cfg.http_token = Some("sekrit".to_string());
+    let state = build_state(&dir, &http_cfg);
+    let (addr, ct) = spawn_server(state, http_cfg).await;
+    wait_ready(addr).await;
+
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}/mcp");
+    let init = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": { "name": "test", "version": "1.0" }
+        }
+    });
+
+    // Case-insensitive scheme, arbitrary whitespace, and the challenge header.
+    let resp = client
+        .post(&url)
+        .header("Accept", "application/json, text/event-stream")
+        .header("Authorization", "bearer   sekrit")
+        .json(&init)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // A missing credential must be rejected with a WWW-Authenticate challenge.
+    let no_auth = client
+        .post(&url)
+        .header("Accept", "application/json, text/event-stream")
+        .json(&init)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(no_auth.status(), StatusCode::UNAUTHORIZED);
+    let challenge = no_auth
+        .headers()
+        .get(reqwest::header::WWW_AUTHENTICATE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    assert_eq!(
+        challenge.as_deref(),
+        Some("Bearer"),
+        "401 must carry WWW-Authenticate: Bearer"
+    );
+
+    ct.cancel();
 }
 
 #[tokio::test]

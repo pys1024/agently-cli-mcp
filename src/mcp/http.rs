@@ -3,6 +3,7 @@
 //! Host-header allowlisting.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::{Request, State};
 use axum::http::{StatusCode, header};
@@ -38,7 +39,7 @@ pub async fn serve(
         );
     }
 
-    let session_manager = Arc::new(LocalSessionManager::default());
+    let session_manager = Arc::new(session_manager(cfg.session_idle_secs));
 
     let factory = {
         let state = state.clone();
@@ -55,6 +56,13 @@ pub async fn serve(
         server_config = server_config.disable_allowed_hosts();
     } else {
         server_config = server_config.with_allowed_hosts(cfg.allowed_hosts.clone());
+    }
+    if !cfg.cors_origins.is_empty() {
+        // Origin validation is off by default; an explicit `--cors-origin` list
+        // turns it on and restricts inbound `Origin` headers to those entries.
+        server_config = server_config
+            .with_allowed_origins(cfg.cors_origins.clone())
+            .enforce_origin_validation();
     }
 
     let service = StreamableHttpService::new(factory, session_manager, server_config);
@@ -106,20 +114,54 @@ fn resolve_token(cfg: &HttpConfig) -> Result<Option<String>, AppError> {
     }))
 }
 
+/// Build a [`LocalSessionManager`] whose idle timeout is `session_idle_secs`.
+///
+/// The session manager's `keep_alive` closes sessions that have been inactive
+/// for that long, matching the `--session-idle-secs` / `session_idle_secs`
+/// configuration.
+fn session_manager(session_idle_secs: u64) -> LocalSessionManager {
+    let mut manager = LocalSessionManager::default();
+    manager.session_config.keep_alive = Some(Duration::from_secs(session_idle_secs));
+    manager
+}
+
 /// Bearer-token middleware: requires `Authorization: Bearer <token>` with a
-/// constant-time comparison.
+/// constant-time comparison. The scheme is matched case-insensitively and any
+/// amount of whitespace is accepted between it and the credential; a failed
+/// check answers `401` with a `WWW-Authenticate: Bearer` challenge.
 async fn require_bearer(State(token): State<String>, request: Request, next: Next) -> Response {
     let authorized = request
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
+        .and_then(extract_bearer)
         .is_some_and(|provided| bool::from(provided.as_bytes().ct_eq(token.as_bytes())));
 
     if authorized {
         next.run(request).await
     } else {
-        StatusCode::UNAUTHORIZED.into_response()
+        (
+            StatusCode::UNAUTHORIZED,
+            [(header::WWW_AUTHENTICATE, "Bearer")],
+        )
+            .into_response()
+    }
+}
+
+/// Extract the credential from an `Authorization: <scheme> <credential>` value,
+/// accepting a case-insensitive `Bearer` scheme and any amount of whitespace.
+fn extract_bearer(value: &str) -> Option<&str> {
+    let value = value.trim();
+    let split_at = value.find(char::is_whitespace)?;
+    let (scheme, rest) = value.split_at(split_at);
+    if !scheme.eq_ignore_ascii_case("bearer") {
+        return None;
+    }
+    let credential = rest.trim_start();
+    if credential.is_empty() {
+        None
+    } else {
+        Some(credential)
     }
 }
 
@@ -154,4 +196,35 @@ async fn shutdown_signal(shutdown: CancellationToken) {
         }
     }
     shutdown.cancel();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_manager_sets_configured_keep_alive() {
+        let manager = session_manager(42);
+        assert_eq!(
+            manager.session_config.keep_alive,
+            Some(Duration::from_secs(42))
+        );
+    }
+
+    #[test]
+    fn extract_bearer_is_case_insensitive_and_whitespace_agnostic() {
+        assert_eq!(extract_bearer("Bearer abc"), Some("abc"));
+        assert_eq!(extract_bearer("bearer abc"), Some("abc"));
+        assert_eq!(extract_bearer("BEARER   abc"), Some("abc"));
+        assert_eq!(extract_bearer("  bearer \t abc  "), Some("abc"));
+    }
+
+    #[test]
+    fn extract_bearer_rejects_other_schemes_and_missing_credentials() {
+        assert_eq!(extract_bearer("Basic abc"), None);
+        assert_eq!(extract_bearer("Bearer"), None);
+        assert_eq!(extract_bearer("Bearer   "), None);
+        assert_eq!(extract_bearer(""), None);
+        assert_eq!(extract_bearer("Bearerish abc"), None);
+    }
 }

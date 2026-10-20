@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
@@ -115,7 +115,16 @@ impl Runner {
         let mut child = cmd
             .spawn()
             .map_err(|e| AppError::CliError(format!("failed to spawn CLI: {e}")))?;
-        let mut tree = process::ProcessTree::attach(&child)?;
+        // Same attach-failure guard as [`Runner::run_impl`]: if the (Windows)
+        // Job Object cannot be attached after spawn, kill the child rather than
+        // leak an orphan process.
+        let mut tree = match process::ProcessTree::attach(&child) {
+            Ok(tree) => tree,
+            Err(e) => {
+                let _ = child.kill().await;
+                return Err(e);
+            }
+        };
 
         let stdout = child.stdout.take().expect("stdout was piped");
         let stderr = child.stderr.take().expect("stderr was piped");
@@ -128,16 +137,17 @@ impl Runner {
             let _ = AsyncReadExt::read_to_end(&mut reader, &mut buf).await;
         });
 
+        let started = Instant::now();
         let mut lines = BufReader::new(stdout).lines();
         let mut events = Vec::new();
         let mut timed_out = false;
 
-        let sleep = tokio::time::sleep(timeout);
-        tokio::pin!(sleep);
+        let deadline = tokio::time::sleep(timeout);
+        tokio::pin!(deadline);
 
         loop {
             tokio::select! {
-                _ = &mut sleep => {
+                _ = &mut deadline => {
                     timed_out = true;
                     break;
                 }
@@ -157,11 +167,21 @@ impl Runner {
         if timed_out {
             // Graceful SIGTERM -> 2s -> SIGKILL of the whole tree.
             tree.terminate().await;
+            let _ = child.wait().await;
         } else {
-            tree.disarm();
+            // EOF: the child closed stdout. It may still be running (for
+            // example a CLI that prints a couple of events and then sleeps),
+            // so bound the final reap by the remaining budget instead of
+            // hanging the whole call on `child.wait()`.
+            let remaining = timeout.saturating_sub(started.elapsed());
+            match tokio::time::timeout(remaining, child.wait()).await {
+                Ok(_) => tree.disarm(),
+                Err(_elapsed) => {
+                    tree.terminate().await;
+                    let _ = child.wait().await;
+                }
+            }
         }
-        // Reap the child (avoid a zombie) and let the stderr drain finish.
-        let _ = child.wait().await;
         let _ = stderr_task.await;
 
         Ok(WatchOutput { events, timed_out })
@@ -188,13 +208,29 @@ impl Runner {
             .stderr(Stdio::piped());
         process::configure(&mut cmd);
 
-        let child = cmd
+        let mut child = cmd
             .spawn()
             .map_err(|e| AppError::CliError(format!("failed to spawn CLI: {e}")))?;
 
         // Holds the process-group/Job Object needed to kill the whole tree on
         // timeout or if this future is dropped/cancelled.
-        let mut tree = process::ProcessTree::attach(&child)?;
+        //
+        // On Windows the Job Object is attached *after* spawn (a limitation of
+        // `tokio::process`, which exposes no `CREATE_SUSPENDED` hook), so there
+        // is a sub-millisecond window between `spawn()` returning and the
+        // `AssignProcessToJobObject` call in which the child could, in theory,
+        // spawn a descendant outside the job. That window is inherent to the
+        // current design and not hardened further in this fix wave. If `attach`
+        // itself fails (e.g. the Job Object could not be created/assigned), the
+        // child is already running outside any kill-on-close group, so we kill
+        // it explicitly before propagating the error to avoid orphaning it.
+        let mut tree = match process::ProcessTree::attach(&child) {
+            Ok(tree) => tree,
+            Err(e) => {
+                let _ = child.kill().await;
+                return Err(e);
+            }
+        };
 
         let output =
             tokio::time::timeout(timeout, async move { child.wait_with_output().await }).await;

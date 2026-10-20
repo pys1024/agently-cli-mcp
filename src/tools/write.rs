@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::cli_proc::CliOutcome;
-use crate::cli_proc::bodyfile::{BodyFile, BodyFormat};
+use crate::cli_proc::bodyfile::{self, BodyFile, BodyFormat};
 use crate::config::ConfirmMode;
 use crate::confirm::mrtr;
 use crate::confirm::summary::{self, AttachmentMeta, SourceMessage, SummaryAction, SummaryInput};
@@ -437,6 +437,11 @@ async fn replay_token(
     let source_marked_read = pending.source_marked_read;
     let body_temp = pending.body_temp.clone();
 
+    if let Err(e) = verify_body(&pending) {
+        remove_body(body_temp);
+        return Ok(result::err(tool, &e).into());
+    }
+
     let start = Instant::now();
     let data = match mrtr::finish(state, pending, true).await {
         Ok(d) => d,
@@ -487,6 +492,11 @@ async fn replay_mrtr(
 
     let args_changed = pending.args_hash != fingerprint;
     let body_temp = pending.body_temp.clone();
+
+    if let Err(e) = verify_body(&pending) {
+        remove_body(body_temp);
+        return Ok(result::err(tool, &e).into());
+    }
 
     let data = match mrtr::finish(state, pending, true).await {
         Ok(d) => d,
@@ -552,12 +562,7 @@ async fn first_call(
         let pending = mrtr::begin(
             state,
             tool,
-            pending_spec(
-                &request,
-                fingerprint,
-                ctk.clone(),
-                body_temp_path(state, &request),
-            ),
+            pending_spec(state, &request, fingerprint, ctk.clone()),
         );
         state.confirm.insert(ctk.clone(), pending);
         return Ok(confirmation_required(tool, &summary, &ctk, state.cfg.confirm.ttl_secs).into());
@@ -568,11 +573,7 @@ async fn first_call(
     let is_mrtr = version.as_ref().is_some_and(|v| v.as_str() >= "2026-07-28");
 
     if is_mrtr {
-        let pending = mrtr::begin(
-            state,
-            tool,
-            pending_spec(&request, fingerprint, ctk, body_temp_path(state, &request)),
-        );
+        let pending = mrtr::begin(state, tool, pending_spec(state, &request, fingerprint, ctk));
         let pending_id = format!("pending_{}", uuid::Uuid::new_v4());
         state.confirm.insert(pending_id.clone(), pending);
         let result =
@@ -587,11 +588,11 @@ async fn first_call(
         .await
     {
         Ok(Some(resp)) if resp.confirm => {
-            let pending = mrtr::begin(
-                state,
-                tool,
-                pending_spec(&request, fingerprint, ctk, body_temp_path(state, &request)),
-            );
+            let pending = mrtr::begin(state, tool, pending_spec(state, &request, fingerprint, ctk));
+            if let Err(e) = verify_body(&pending) {
+                remove_body(body_temp_path(state, &request));
+                return Ok(result::err(tool, &e).into());
+            }
             let data = match mrtr::finish(state, pending, true).await {
                 Ok(d) => d,
                 Err(e) => {
@@ -632,12 +633,7 @@ async fn first_call(
             let pending = mrtr::begin(
                 state,
                 tool,
-                pending_spec(
-                    &request,
-                    fingerprint,
-                    ctk.clone(),
-                    body_temp_path(state, &request),
-                ),
+                pending_spec(state, &request, fingerprint, ctk.clone()),
             );
             state.confirm.insert(ctk.clone(), pending);
             Ok(confirmation_required(tool, &summary, &ctk, state.cfg.confirm.ttl_secs).into())
@@ -719,17 +715,18 @@ fn read_confirm(input_responses: &Option<ModelInputResponses>) -> bool {
 }
 
 fn pending_spec(
+    state: &AppState,
     request: &WriteRequest,
     fingerprint: String,
     ctk: String,
-    body_temp: Option<PathBuf>,
 ) -> mrtr::PendingSpec {
     mrtr::PendingSpec {
         action: request.action,
         canonical_args: request.argv.clone(),
         args_hash: fingerprint,
         ctk,
-        body_temp,
+        body_temp: body_temp_path(state, request),
+        body_sha256: request.body_temp.as_ref().map(|b| b.digest()),
         source_marked_read: request.source_marked_read,
     }
 }
@@ -815,6 +812,15 @@ fn body_temp_path(state: &AppState, request: &WriteRequest) -> Option<PathBuf> {
 fn remove_body(path: Option<PathBuf>) {
     if let Some(path) = path {
         let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Verify a retained body file still matches the digest captured at creation
+/// time, so a tampered temp file can never be replayed as the confirmed write.
+fn verify_body(pending: &crate::confirm::Pending) -> Result<(), AppError> {
+    match (&pending.body_temp, &pending.body_sha256) {
+        (Some(path), Some(expected)) => bodyfile::verify_file(path, expected),
+        _ => Ok(()),
     }
 }
 

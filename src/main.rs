@@ -41,10 +41,25 @@ async fn main() -> error::Result<()> {
     }
 }
 
-/// Run the `--check` diagnostics: locate the CLI, print its version and auth
-/// status, and fail (nonzero exit) if either command does not succeed.
+/// Run the `--check` diagnostics: verify the working directory, locate the CLI,
+/// print its version and auth status, and fail (nonzero exit) if any of those
+/// do not succeed.
 async fn check(cfg: &config::Config) -> error::Result<()> {
     use std::time::Duration;
+
+    // The working directory must exist and be a directory (spec §13.1).
+    let workdir = match cfg.cli.workdir.as_deref() {
+        Some(dir) => std::path::PathBuf::from(dir),
+        None => std::env::current_dir().map_err(|e| {
+            error::AppError::Other(format!("cannot determine working directory: {e}"))
+        })?,
+    };
+    if !workdir.is_dir() {
+        return Err(error::AppError::Other(format!(
+            "working directory `{}` does not exist or is not a directory",
+            workdir.display()
+        )));
+    }
 
     let runner = Runner::new(&cfg.cli)?;
     let timeout = Duration::from_secs(cfg.cli.timeout_secs);

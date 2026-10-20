@@ -78,10 +78,14 @@ fn args(obj: Value) -> Map<String, Value> {
 }
 
 /// Read the fake CLI's argv log as a list of per-invocation argument vectors.
+///
+/// Returns an empty list when the log has not been created, so callers can
+/// assert "the CLI was never spawned" without first checking for the file.
 fn read_argv_log(path: &PathBuf) -> Vec<Vec<String>> {
-    std::fs::read_to_string(path)
-        .unwrap()
-        .lines()
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    raw.lines()
         .map(|l| serde_json::from_str(l).unwrap())
         .collect()
 }
@@ -215,7 +219,7 @@ async fn download_rejects_outside_path() {
         let result = client
             .call_tool(
                 CallToolRequestParams::new("mail_download_attachment").with_arguments(args(
-                    json!({ "msg": "msg_1", "att": "file.pdf", "output": "/tmp" }),
+                    json!({ "msg": "msg_1", "att": "att_1", "output": "/tmp" }),
                 )),
             )
             .await
@@ -228,6 +232,83 @@ async fn download_rejects_outside_path() {
         assert_eq!(sc["ok"], false);
         assert_eq!(sc["error"]["code"], "PATH_OUTSIDE_WORKDIR");
         assert_eq!(result.is_error, Some(true));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn download_validates_msg_and_att_prefixes() {
+    let _guard = ENV_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("argv.log");
+    set_scenario("success_list", &log);
+    let state = build_state(&dir);
+
+    with_server(state, move |client| {
+        let log = log.clone();
+        async move {
+            let bad_msg = client
+                .call_tool(
+                    CallToolRequestParams::new("mail_download_attachment")
+                        .with_arguments(args(json!({ "msg": "not_msg", "att": "att_1" }))),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                bad_msg.structured_content.as_ref().unwrap()["error"]["code"],
+                "INVALID_ARGUMENT"
+            );
+
+            let bad_att = client
+                .call_tool(
+                    CallToolRequestParams::new("mail_download_attachment")
+                        .with_arguments(args(json!({ "msg": "msg_1", "att": "not_att" }))),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                bad_att.structured_content.as_ref().unwrap()["error"]["code"],
+                "INVALID_ARGUMENT"
+            );
+
+            // Validation happens before the CLI is spawned.
+            let calls = read_argv_log(&log);
+            assert!(calls.is_empty(), "no CLI call must happen on bad IDs");
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn tool_error_message_redacts_ctk_token() {
+    let _guard = ENV_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    set_scenario("error_with_token", &dir.path().join("argv.log"));
+    let state = build_state(&dir);
+
+    with_server(state, |client| async move {
+        let result = client
+            .call_tool(CallToolRequestParams::new("mail_list_messages"))
+            .await
+            .unwrap();
+
+        let sc = result
+            .structured_content
+            .as_ref()
+            .expect("structured content");
+        assert_eq!(sc["ok"], false);
+        assert_eq!(sc["error"]["code"], "INVALID_ARGUMENT");
+        let message = sc["error"]["message"]
+            .as_str()
+            .expect("message is a string");
+        assert!(
+            !message.contains("ctk_1234567890"),
+            "full token leaked into tool error: {message}"
+        );
+        assert!(
+            message.contains("ctk_12345678***"),
+            "token must be masked: {message}"
+        );
     })
     .await;
 }

@@ -104,6 +104,20 @@ fn main() {
             println!("not json");
             exit(0);
         }
+        "error_with_token" => {
+            // An error whose stderr carries a confirmation token, to exercise
+            // redaction of tool-visible error messages.
+            eprintln!("auth failed: token ctk_1234567890 is invalid");
+            exit(1);
+        }
+        "close_stdout_sleep" => {
+            // Close stdout immediately but keep running: a watch must bound its
+            // final reap rather than hang forever on a child that stops
+            // producing events without exiting.
+            drop(std::io::stdout());
+            thread::sleep(Duration::from_secs(30));
+            exit(0);
+        }
         "sleep" => {
             thread::sleep(Duration::from_secs(30));
             exit(0);

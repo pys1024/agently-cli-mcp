@@ -91,6 +91,7 @@ impl Config {
     ///
     /// Rules (spec §13.3 / §13.2):
     /// - `allow` and `disabled` tool lists are mutually exclusive;
+    /// - every name in `allow`/`disabled` must be a canonical tool name;
     /// - `watch_max_secs` must be within `5..=120`;
     /// - `max_body_chars` must be greater than `0`;
     /// - `max_concurrency` must be at least `1`.
@@ -102,6 +103,14 @@ impl Config {
             return Err(ConfigError::Invalid(
                 "`allow` and `disabled` tool lists are mutually exclusive".to_string(),
             ));
+        }
+        for name in self.tools.disabled.iter().chain(self.tools.allow.iter()) {
+            if !crate::tools::ALL_TOOLS.contains(&name.as_str()) {
+                return Err(ConfigError::Invalid(format!(
+                    "unknown tool name `{name}` (expected one of: {})",
+                    crate::tools::ALL_TOOLS.join(", ")
+                )));
+            }
         }
         if !(5..=120).contains(&self.cli.watch_max_secs) {
             return Err(ConfigError::Invalid(format!(

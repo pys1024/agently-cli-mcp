@@ -1,6 +1,8 @@
 //! Tests for the `BodyFile` temp-file abstraction used by the write tools.
 
-use agently_cli_mcp::cli_proc::bodyfile::{BodyFile, BodyFormat};
+use std::time::Duration;
+
+use agently_cli_mcp::cli_proc::bodyfile::{BodyFile, BodyFormat, sweep_stale_body_files};
 use tempfile::tempdir;
 
 #[test]
@@ -60,6 +62,30 @@ fn remove_deletes_file() {
 
     body.remove().expect("remove must succeed");
     assert!(!full.exists(), "file must be gone after remove");
+}
+
+#[test]
+fn startup_sweep_removes_old_but_keeps_fresh() {
+    let dir = tempdir().unwrap();
+    let tmp = dir.path().join(".agently-cli-mcp/tmp");
+    std::fs::create_dir_all(&tmp).unwrap();
+
+    let old = tmp.join("old.txt");
+    let fresh = tmp.join("fresh.txt");
+    std::fs::write(&old, b"old").unwrap();
+    std::fs::write(&fresh, b"fresh").unwrap();
+
+    // Age the old file to well beyond the 10-minute sweep threshold.
+    let old_modified = std::time::SystemTime::now() - Duration::from_secs(3600);
+    std::fs::File::create(&old)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(old_modified))
+        .unwrap();
+
+    let removed = sweep_stale_body_files(dir.path(), Duration::from_secs(10 * 60));
+    assert_eq!(removed, 1, "only the stale file should be removed");
+    assert!(!old.exists(), "stale file must be removed");
+    assert!(fresh.exists(), "fresh file must be kept");
 }
 
 #[cfg(unix)]

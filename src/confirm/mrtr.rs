@@ -60,6 +60,7 @@ pub struct PendingSpec {
     pub args_hash: String,
     pub ctk: String,
     pub body_temp: Option<PathBuf>,
+    pub body_sha256: Option<[u8; 32]>,
     pub source_marked_read: bool,
 }
 
@@ -80,6 +81,7 @@ pub fn begin(state: &AppState, tool: &str, spec: PendingSpec) -> Pending {
         // Recomputed by the store from its own TTL on insert.
         expires_at: std::time::Instant::now(),
         body_temp: spec.body_temp,
+        body_sha256: spec.body_sha256,
         source_marked_read: spec.source_marked_read,
     }
 }

@@ -27,6 +27,21 @@ pub async fn download_attachment(
 ) -> Result<(Value, Value), AppError> {
     let start = Instant::now();
 
+    // Validate the message/attachment IDs before touching the filesystem or
+    // spawning the CLI (spec §5.1: `msg_` / `att_` prefixes).
+    if !args.msg.starts_with("msg_") {
+        return Err(AppError::InvalidArgument(format!(
+            "message id `{}` must start with `msg_`",
+            args.msg
+        )));
+    }
+    if !args.att.starts_with("att_") {
+        return Err(AppError::InvalidArgument(format!(
+            "attachment id `{}` must start with `att_`",
+            args.att
+        )));
+    }
+
     // Resolve the output directory inside the sandbox, defaulting to `.`.
     let output = match args.output.as_deref() {
         Some(dir) => {

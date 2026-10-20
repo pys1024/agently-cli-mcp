@@ -38,6 +38,14 @@ pub struct ProcessTree {
     job: HANDLE,
 }
 
+// `HANDLE` is a raw `*mut c_void` in `windows-sys`, so it is `!Send`/`!Sync` by
+// default. A Job Object handle is an opaque kernel handle (an integer value),
+// never dereferenced as process memory, and every mutation takes `&mut self`,
+// so sharing or moving the tree across threads is sound. This is the same
+// reasoning tokio applies to its own raw process handles.
+unsafe impl Send for ProcessTree {}
+unsafe impl Sync for ProcessTree {}
+
 impl ProcessTree {
     /// Create a Job Object and assign `child` to it.
     pub fn attach(child: &Child) -> Result<ProcessTree, AppError> {

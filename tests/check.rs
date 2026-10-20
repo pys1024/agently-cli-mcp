@@ -64,3 +64,31 @@ fn check_fails_when_version_command_fails() {
         "stderr should identify the failing command: {stderr}"
     );
 }
+
+#[test]
+fn check_fails_when_workdir_is_missing_or_not_a_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("does-not-exist");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_agently-cli-mcp"))
+        .args([
+            "--check",
+            "--cli",
+            env!("CARGO_BIN_EXE_fake-agently-cli"),
+            "--workdir",
+            missing.to_str().unwrap(),
+        ])
+        .env("FAKE_SCENARIO", "success_list")
+        .output()
+        .expect("failed to run agently-cli-mcp --check");
+
+    assert!(
+        !output.status.success(),
+        "a missing workdir must make --check exit nonzero"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("working directory"),
+        "stderr should identify the failing workdir: {stderr}"
+    );
+}

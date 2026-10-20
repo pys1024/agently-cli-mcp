@@ -4,7 +4,7 @@ use agently_cli_mcp::cli_proc::CliOutcome;
 use agently_cli_mcp::cli_proc::runner::Runner;
 use agently_cli_mcp::config::CliConfig;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
 /// Serializes access to the process-global `FAKE_SCENARIO` / `FAKE_ARGV_LOG`
@@ -135,5 +135,26 @@ async fn concurrent_calls_are_serialized() {
         markers,
         vec!["START", "END", "START", "END"],
         "serialized calls must not overlap (got {markers:?})"
+    );
+}
+
+#[tokio::test]
+async fn watch_eof_with_live_child_does_not_hang() {
+    let _guard = ENV_LOCK.lock().await;
+    let dir = tempdir().unwrap();
+    // The fake CLI closes stdout immediately but keeps running for 30s; the
+    // watch must bound its final reap by the remaining budget instead of
+    // hanging on `child.wait()` forever.
+    set_scenario("close_stdout_sleep", &dir.path().join("argv.log"));
+
+    let runner = Runner::new(&cli_config(fake_bin())).unwrap();
+    let start = Instant::now();
+    let output = runner.run_watch(&[], Duration::from_secs(1)).await.unwrap();
+
+    assert!(output.events.is_empty(), "no events were emitted");
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "watch must not hang on a child that closed stdout: {:?}",
+        start.elapsed()
     );
 }

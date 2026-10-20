@@ -32,6 +32,8 @@ pub struct Pending {
     pub session_id: String,
     pub expires_at: Instant,
     pub body_temp: Option<PathBuf>,
+    /// SHA-256 of the retained body file, verified before the confirmed replay.
+    pub body_sha256: Option<[u8; 32]>,
     pub source_marked_read: bool,
 }
 
@@ -97,25 +99,48 @@ impl ConfirmStore {
     /// least-recently-used entries as needed. The store recomputes
     /// `pending.expires_at` from its own TTL so a stale caller-supplied value
     /// can never outlive the store.
+    ///
+    /// Any `body_temp` file belonging to an evicted entry is deleted (a missing
+    /// file is ignored) so eviction cannot leak retained body files.
     pub fn insert(&self, key: String, mut pending: Pending) {
-        let mut state = self.lock();
-        let now = Instant::now();
-        pending.expires_at = now + self.ttl;
+        let evicted = {
+            let mut state = self.lock();
+            let now = Instant::now();
+            pending.expires_at = now + self.ttl;
+            let mut evicted = Vec::new();
 
-        state.entries.retain(|_, e| e.pending.expires_at > now);
-        if state.entries.len() >= self.capacity
-            && let Some(lru) = state
-                .entries
-                .iter()
-                .min_by_key(|(_, e)| e.seq)
-                .map(|(k, _)| k.clone())
-        {
-            state.entries.remove(&lru);
+            state.entries.retain(|_, e| {
+                if e.pending.expires_at > now {
+                    true
+                } else {
+                    if let Some(path) = &e.pending.body_temp {
+                        evicted.push(path.clone());
+                    }
+                    false
+                }
+            });
+            if state.entries.len() >= self.capacity
+                && let Some(lru) = state
+                    .entries
+                    .iter()
+                    .min_by_key(|(_, e)| e.seq)
+                    .map(|(k, _)| k.clone())
+                && let Some(entry) = state.entries.remove(&lru)
+                && let Some(path) = &entry.pending.body_temp
+            {
+                evicted.push(path.clone());
+            }
+
+            state.next_seq += 1;
+            let seq = state.next_seq;
+            state.entries.insert(key, Entry { pending, seq });
+            evicted
+        };
+
+        // Delete evicted body files outside the lock (ignore NotFound).
+        for path in evicted {
+            let _ = std::fs::remove_file(path);
         }
-
-        state.next_seq += 1;
-        let seq = state.next_seq;
-        state.entries.insert(key, Entry { pending, seq });
     }
 
     /// Atomically remove and return the pending confirmation for `key`.

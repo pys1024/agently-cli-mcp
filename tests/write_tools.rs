@@ -391,6 +391,79 @@ async fn forward_rejects_empty_body() {
 }
 
 #[tokio::test]
+async fn tampered_body_file_is_rejected_before_replay() {
+    let _guard = ENV_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("argv.log");
+    set_scenario("confirm_then_success", &log);
+    let state = build_state(&dir, "token");
+    let tmp_dir = dir.path().join(".agently-cli-mcp/tmp");
+
+    with_server(
+        state,
+        ProtocolVersion::V_2025_11_25,
+        false,
+        Elicit::Accept,
+        move |client| {
+            let log = log.clone();
+            async move {
+                let first = client
+                    .call_tool(
+                        CallToolRequestParams::new("mail_send_message").with_arguments(args(
+                            json!({
+                                "to": ["a@example.com"],
+                                "subject": "Hello",
+                                "body": "hi",
+                            }),
+                        )),
+                    )
+                    .await
+                    .unwrap();
+                let ctk = first.structured_content.as_ref().unwrap()["confirmation_token"]
+                    .as_str()
+                    .unwrap()
+                    .to_string();
+
+                // The body file is retained for the confirmed replay; tamper it.
+                let files: Vec<_> = std::fs::read_dir(&tmp_dir)
+                    .unwrap()
+                    .map(|e| e.unwrap().path())
+                    .collect();
+                assert_eq!(files.len(), 1, "exactly one body file must be retained");
+                std::fs::write(&files[0], b"tampered").unwrap();
+
+                let second = client
+                    .call_tool(
+                        CallToolRequestParams::new("mail_send_message").with_arguments(args(
+                            json!({
+                                "to": ["a@example.com"],
+                                "subject": "Hello",
+                                "body": "hi",
+                                "confirmation_token": ctk,
+                            }),
+                        )),
+                    )
+                    .await
+                    .unwrap();
+
+                let sc = second.structured_content.as_ref().unwrap();
+                assert_eq!(sc["ok"], false);
+                assert_eq!(sc["error"]["code"], "INVALID_ARGUMENT");
+
+                // The replay must not reach the CLI: only the first call ran.
+                let calls = read_argv_log(&log);
+                assert_eq!(
+                    calls.len(),
+                    1,
+                    "tampered body must be rejected before replay"
+                );
+            }
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn token_mode_reply_reports_source_marked_read() {
     let _guard = ENV_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();

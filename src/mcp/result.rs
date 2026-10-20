@@ -41,10 +41,15 @@ pub fn ok(tool: &str, data: Value, meta: Value) -> CallToolResult {
 /// The error envelope carries the machine-readable `code`, the human-readable
 /// `message`, a retryability flag, and a targeted `hint`. `is_error` is set so
 /// MCP clients render it as a tool-level failure.
+///
+/// The `message` is passed through [`crate::guard::redact::text`] so that CLI
+/// stderr or `error.message` echoing a confirmation token (`ctk_...`) or a
+/// bearer credential is masked before it reaches the tool-visible envelope.
 pub fn err(tool: &str, error: &AppError) -> CallToolResult {
+    let message = crate::guard::redact::text(&error.to_string());
     let err = json!({
         "code": error.code(),
-        "message": error.to_string(),
+        "message": message,
         "retryable": error.retryable(),
         "hint": hint(error),
     });
@@ -78,5 +83,38 @@ fn hint(error: &AppError) -> &'static str {
         AppError::SearchContextMismatch(_) => "the supplied filters conflict with the cursor",
         AppError::WatchBusy(_) => "wait for the current watch to finish, then call again",
         _ => "",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::AppError;
+
+    #[test]
+    fn err_redacts_ctk_tokens_and_bearers() {
+        let error = AppError::Rejected(
+            "CLI failed with token ctk_1234567890 and header Bearer supersecrettoken".to_string(),
+        );
+        let result = err("mail_list_messages", &error);
+
+        let sc = result.structured_content.expect("structured content");
+        let message = sc["error"]["message"]
+            .as_str()
+            .expect("message is a string");
+
+        assert!(
+            !message.contains("ctk_1234567890"),
+            "full token leaked: {message}"
+        );
+        assert!(
+            !message.contains("supersecrettoken"),
+            "bearer credential leaked: {message}"
+        );
+        assert!(message.contains("ctk_12345678***"), "token must be masked");
+        // The envelope shape is unchanged: code/retryable/hint still present.
+        assert_eq!(sc["error"]["code"], "REJECTED");
+        assert_eq!(sc["error"]["retryable"], false);
+        assert_eq!(sc["ok"], false);
     }
 }

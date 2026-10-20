@@ -22,6 +22,7 @@ fn pending(session: &str) -> Pending {
         // The store recomputes `expires_at` from its TTL on insert.
         expires_at: Instant::now(),
         body_temp: None,
+        body_sha256: None,
         source_marked_read: false,
     }
 }
@@ -106,6 +107,48 @@ fn capacity_evicts_least_recently_used() {
     assert!(store.take("k1", "sess").is_err());
     assert!(store.take("k2", "sess").is_ok());
     assert!(store.take("k3", "sess").is_ok());
+}
+
+#[test]
+fn insert_at_capacity_deletes_evicted_body_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let body = dir.path().join("evicted.txt");
+    std::fs::write(&body, b"x").unwrap();
+
+    let store = ConfirmStore::with_capacity(2);
+
+    let mut evicted = pending("sess");
+    evicted.body_temp = Some(body.clone());
+    store.insert("k1".to_string(), evicted);
+    store.insert("k2".to_string(), pending("sess"));
+    store.insert("k3".to_string(), pending("sess"));
+
+    // k1 is the least recently used and is evicted; its body file must go too.
+    assert!(!body.exists(), "evicted body file must be deleted");
+    assert!(store.take("k1", "sess").is_err());
+}
+
+#[test]
+fn cleanup_expired_body_file_is_removed_by_caller() {
+    let dir = tempfile::tempdir().unwrap();
+    let body = dir.path().join("expired.txt");
+    std::fs::write(&body, b"x").unwrap();
+
+    let store = ConfirmStore::with_ttl(Duration::from_millis(1));
+    let mut p = pending("sess");
+    p.body_temp = Some(body.clone());
+    store.insert("ctk_body".to_string(), p);
+
+    std::thread::sleep(Duration::from_millis(10));
+
+    // The janitor calls `cleanup_expired` and deletes each returned path.
+    let paths = store.cleanup_expired();
+    assert_eq!(paths, vec![body.clone()]);
+    for path in paths {
+        std::fs::remove_file(path).unwrap();
+    }
+    assert!(!body.exists(), "expired body file must be removed");
+    assert!(store.take("ctk_body", "sess").is_err());
 }
 
 #[test]
