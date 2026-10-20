@@ -19,6 +19,7 @@ use serde_json::Value;
 
 use crate::cli_proc::CliOutcome;
 use crate::confirm::store::Pending;
+use crate::confirm::summary::SummaryAction;
 use crate::error::AppError;
 use crate::mcp::server::AppState;
 
@@ -51,29 +52,35 @@ pub fn confirm_requests(summary: &Value) -> InputRequests {
     requests
 }
 
-/// Build a [`Pending`] record for a first CLI call that yielded `ctk`.
+/// Everything needed to build a [`Pending`] record for a first CLI call that
+/// yielded `ctk`.
+pub struct PendingSpec {
+    pub action: SummaryAction,
+    pub canonical_args: Vec<String>,
+    pub args_hash: String,
+    pub ctk: String,
+    pub body_temp: Option<PathBuf>,
+    pub source_marked_read: bool,
+}
+
+/// Build a [`Pending`] record from [`PendingSpec`].
 ///
 /// `canonical_args` is the exact argv to replay; `args_hash` is a fingerprint
 /// of the semantic (human-visible) request, used to report `args_changed` when
 /// a follow-up call mutates an input. The caller stores the record under the
 /// MRTR `pending_id` or the token-mode `ctk` key.
-pub fn begin(
-    state: &AppState,
-    tool: &str,
-    canonical_args: Vec<String>,
-    args_hash: String,
-    ctk: String,
-    body_temp: Option<PathBuf>,
-) -> Pending {
+pub fn begin(state: &AppState, tool: &str, spec: PendingSpec) -> Pending {
     Pending {
         tool: tool.to_string(),
-        args_hash,
-        canonical_args,
-        ctk,
+        action: spec.action,
+        args_hash: spec.args_hash,
+        canonical_args: spec.canonical_args,
+        ctk: spec.ctk,
         session_id: state.session_id.clone(),
         // Recomputed by the store from its own TTL on insert.
         expires_at: std::time::Instant::now(),
-        body_temp,
+        body_temp: spec.body_temp,
+        source_marked_read: spec.source_marked_read,
     }
 }
 

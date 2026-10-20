@@ -3,11 +3,13 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use agently_cli_mcp::confirm::summary::SummaryAction;
 use agently_cli_mcp::confirm::{ConfirmStore, Pending};
 
 fn pending(session: &str) -> Pending {
     Pending {
         tool: "mail_send_message".to_string(),
+        action: SummaryAction::Send,
         args_hash: "deadbeef".to_string(),
         canonical_args: vec![
             "message".to_string(),
@@ -20,6 +22,7 @@ fn pending(session: &str) -> Pending {
         // The store recomputes `expires_at` from its TTL on insert.
         expires_at: Instant::now(),
         body_temp: None,
+        source_marked_read: false,
     }
 }
 
@@ -103,4 +106,47 @@ fn capacity_evicts_least_recently_used() {
     assert!(store.take("k1", "sess").is_err());
     assert!(store.take("k2", "sess").is_ok());
     assert!(store.take("k3", "sess").is_ok());
+}
+
+#[test]
+fn take_checked_wrong_session_does_not_consume() {
+    let store = ConfirmStore::new();
+    let mut with_body = pending("sess");
+    with_body.body_temp = Some(PathBuf::from("tmp/body.txt"));
+    store.insert("ctk_1".to_string(), with_body);
+
+    let err = store.take_checked("ctk_1", "other").unwrap_err();
+    assert_eq!(err.error.code(), "CONFIRMATION_EXPIRED");
+    // Wrong-session must not delete the legitimate session's body file.
+    assert_eq!(err.body_temp, None);
+
+    // The legitimate entry must survive for its own session.
+    let taken = store.take_checked("ctk_1", "sess").unwrap();
+    assert_eq!(taken.session_id, "sess");
+}
+
+#[test]
+fn take_checked_expired_returns_body_temp() {
+    let store = ConfirmStore::with_ttl(Duration::from_millis(1));
+    let mut with_body = pending("sess");
+    with_body.body_temp = Some(PathBuf::from("tmp/body.txt"));
+    store.insert("ctk_1".to_string(), with_body);
+    std::thread::sleep(Duration::from_millis(10));
+
+    let err = store.take_checked("ctk_1", "sess").unwrap_err();
+    assert_eq!(err.error.code(), "CONFIRMATION_EXPIRED");
+    // The expired entry was consumed, so its body file path is reported.
+    assert_eq!(err.body_temp, Some(PathBuf::from("tmp/body.txt")));
+
+    // It is single-use: a second take finds nothing and reports no body file.
+    let again = store.take_checked("ctk_1", "sess").unwrap_err();
+    assert_eq!(again.body_temp, None);
+}
+
+#[test]
+fn take_checked_missing_reports_no_body_temp() {
+    let store = ConfirmStore::new();
+    let err = store.take_checked("unknown", "sess").unwrap_err();
+    assert_eq!(err.error.code(), "CONFIRMATION_EXPIRED");
+    assert_eq!(err.body_temp, None);
 }

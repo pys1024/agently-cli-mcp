@@ -11,5 +11,5 @@ pub mod mrtr;
 pub mod store;
 pub mod summary;
 
-pub use store::{ConfirmStore, Pending};
+pub use store::{ConfirmStore, Pending, TakeError};
 pub use summary::{AttachmentMeta, SourceMessage, SummaryAction, SummaryInput};

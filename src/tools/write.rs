@@ -426,11 +426,15 @@ async fn replay_token(
     ctk: String,
     fingerprint: String,
 ) -> Result<CallToolResponse, ErrorData> {
-    let pending = match state.confirm.take(&ctk, &state.session_id) {
+    let pending = match state.confirm.take_checked(&ctk, &state.session_id) {
         Ok(p) => p,
-        Err(e) => return Ok(result::err(tool, &e).into()),
+        Err(take_err) => {
+            remove_body(take_err.body_temp);
+            return Ok(result::err(tool, &take_err.error).into());
+        }
     };
     let args_changed = pending.args_hash != fingerprint;
+    let source_marked_read = pending.source_marked_read;
     let body_temp = pending.body_temp.clone();
 
     let start = Instant::now();
@@ -442,7 +446,12 @@ async fn replay_token(
         }
     };
     remove_body(body_temp);
-    Ok(result::ok(tool, data, success_meta(start, args_changed, false)).into())
+    Ok(result::ok(
+        tool,
+        data,
+        success_meta(start, args_changed, source_marked_read),
+    )
+    .into())
 }
 
 /// A retry with echoed MRTR state and the client's elicitation response.
@@ -453,21 +462,32 @@ async fn replay_mrtr(
     input_responses: Option<ModelInputResponses>,
     fingerprint: String,
 ) -> Result<CallToolResponse, ErrorData> {
-    let pending = match state.confirm.take(&pending_id, &state.session_id) {
+    let pending = match state.confirm.take_checked(&pending_id, &state.session_id) {
         Ok(p) => p,
-        Err(e) => return Ok(result::err(tool, &e).into()),
+        Err(take_err) => {
+            remove_body(take_err.body_temp);
+            return Ok(result::err(tool, &take_err.error).into());
+        }
     };
 
-    let confirm = read_confirm(&input_responses);
-    if !confirm {
+    let action = pending.action;
+    let source_marked_read = pending.source_marked_read;
+    let start = Instant::now();
+
+    if !read_confirm(&input_responses) {
         remove_body(pending.body_temp.clone());
-        return Ok(declined(tool, action_from_tool(tool), None, json!({})).into());
+        return Ok(declined(
+            tool,
+            action.as_str(),
+            None,
+            declined_meta(start, source_marked_read),
+        )
+        .into());
     }
 
     let args_changed = pending.args_hash != fingerprint;
     let body_temp = pending.body_temp.clone();
 
-    let start = Instant::now();
     let data = match mrtr::finish(state, pending, true).await {
         Ok(d) => d,
         Err(e) => {
@@ -476,7 +496,12 @@ async fn replay_mrtr(
         }
     };
     remove_body(body_temp);
-    Ok(result::ok(tool, data, success_meta(start, args_changed, false)).into())
+    Ok(result::ok(
+        tool,
+        data,
+        success_meta(start, args_changed, source_marked_read),
+    )
+    .into())
 }
 
 /// The first call: run the CLI unconfirmed, then branch on mode and protocol.
@@ -527,10 +552,12 @@ async fn first_call(
         let pending = mrtr::begin(
             state,
             tool,
-            request.argv.clone(),
-            fingerprint,
-            ctk.clone(),
-            body_temp_path(state, &request),
+            pending_spec(
+                &request,
+                fingerprint,
+                ctk.clone(),
+                body_temp_path(state, &request),
+            ),
         );
         state.confirm.insert(ctk.clone(), pending);
         return Ok(confirmation_required(tool, &summary, &ctk, state.cfg.confirm.ttl_secs).into());
@@ -544,10 +571,7 @@ async fn first_call(
         let pending = mrtr::begin(
             state,
             tool,
-            request.argv.clone(),
-            fingerprint,
-            ctk,
-            body_temp_path(state, &request),
+            pending_spec(&request, fingerprint, ctk, body_temp_path(state, &request)),
         );
         let pending_id = format!("pending_{}", uuid::Uuid::new_v4());
         state.confirm.insert(pending_id.clone(), pending);
@@ -566,10 +590,7 @@ async fn first_call(
             let pending = mrtr::begin(
                 state,
                 tool,
-                request.argv.clone(),
-                fingerprint,
-                ctk,
-                body_temp_path(state, &request),
+                pending_spec(&request, fingerprint, ctk, body_temp_path(state, &request)),
             );
             let data = match mrtr::finish(state, pending, true).await {
                 Ok(d) => d,
@@ -592,7 +613,7 @@ async fn first_call(
                 tool,
                 request.action.as_str(),
                 Some(&summary),
-                declined_meta(start, &request),
+                declined_meta(start, request.source_marked_read),
             )
             .into())
         }
@@ -602,7 +623,7 @@ async fn first_call(
                 tool,
                 request.action.as_str(),
                 Some(&summary),
-                declined_meta(start, &request),
+                declined_meta(start, request.source_marked_read),
             )
             .into())
         }
@@ -611,10 +632,12 @@ async fn first_call(
             let pending = mrtr::begin(
                 state,
                 tool,
-                request.argv.clone(),
-                fingerprint,
-                ctk.clone(),
-                body_temp_path(state, &request),
+                pending_spec(
+                    &request,
+                    fingerprint,
+                    ctk.clone(),
+                    body_temp_path(state, &request),
+                ),
             );
             state.confirm.insert(ctk.clone(), pending);
             Ok(confirmation_required(tool, &summary, &ctk, state.cfg.confirm.ttl_secs).into())
@@ -695,14 +718,19 @@ fn read_confirm(input_responses: &Option<ModelInputResponses>) -> bool {
             .unwrap_or(false)
 }
 
-fn action_from_tool(tool: &str) -> &'static str {
-    match tool {
-        "mail_send_message" => "send",
-        "mail_reply_message" => "reply",
-        "mail_forward_message" => "forward",
-        "mail_move_to_trash" => "trash",
-        "mail_delete_messages" => "delete",
-        _ => "write",
+fn pending_spec(
+    request: &WriteRequest,
+    fingerprint: String,
+    ctk: String,
+    body_temp: Option<PathBuf>,
+) -> mrtr::PendingSpec {
+    mrtr::PendingSpec {
+        action: request.action,
+        canonical_args: request.argv.clone(),
+        args_hash: fingerprint,
+        ctk,
+        body_temp,
+        source_marked_read: request.source_marked_read,
     }
 }
 
@@ -736,9 +764,9 @@ fn success_meta(start: Instant, args_changed: bool, source_marked_read: bool) ->
     meta
 }
 
-fn declined_meta(start: Instant, request: &WriteRequest) -> Value {
+fn declined_meta(start: Instant, source_marked_read: bool) -> Value {
     let mut meta = json!({ "duration_ms": start.elapsed().as_millis() });
-    if request.source_marked_read {
+    if source_marked_read {
         meta["side_effects"] = json!(["source_marked_read"]);
     }
     meta

@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use crate::confirm::summary::SummaryAction;
 use crate::error::AppError;
 
 /// Default time-to-live for a pending confirmation.
@@ -24,11 +25,21 @@ pub const DEFAULT_CAPACITY: usize = 100;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pending {
     pub tool: String,
+    pub action: SummaryAction,
     pub args_hash: String,
     pub canonical_args: Vec<String>,
     pub ctk: String,
     pub session_id: String,
     pub expires_at: Instant,
+    pub body_temp: Option<PathBuf>,
+    pub source_marked_read: bool,
+}
+
+/// A failed [`ConfirmStore::take_checked`]: the error plus any body file the
+/// caller must delete (only set when the entry was actually consumed).
+#[derive(Debug)]
+pub struct TakeError {
+    pub error: Box<AppError>,
     pub body_temp: Option<PathBuf>,
 }
 
@@ -109,23 +120,59 @@ impl ConfirmStore {
 
     /// Atomically remove and return the pending confirmation for `key`.
     ///
-    /// This is single-use: the entry is consumed whether or not it is valid.
-    /// A missing, expired, or wrong-session entry returns
-    /// [`AppError::ConfirmationExpired`].
+    /// This is single-use: a valid entry is consumed. A missing, expired, or
+    /// wrong-session entry returns [`AppError::ConfirmationExpired`]; a
+    /// wrong-session entry is left in place. Callers that need to delete the
+    /// retained body file on an error should use [`ConfirmStore::take_checked`].
     pub fn take(&self, key: &str, session: &str) -> Result<Pending, AppError> {
+        self.take_checked(key, session).map_err(|e| *e.error)
+    }
+
+    /// Atomically remove and return the pending confirmation for `key`,
+    /// reporting any body file the caller must delete on error.
+    ///
+    /// * A valid entry is consumed and returned.
+    /// * A missing key returns [`TakeError`] with `body_temp = None`.
+    /// * An expired entry is consumed; its `body_temp` is returned so the
+    ///   caller can delete it (it can no longer be reclaimed by
+    ///   [`ConfirmStore::cleanup_expired`]).
+    /// * A wrong-session entry is left untouched; `body_temp = None` so the
+    ///   legitimate session's pending confirmation and body file survive.
+    pub fn take_checked(&self, key: &str, session: &str) -> Result<Pending, TakeError> {
         let mut state = self.lock();
         let now = Instant::now();
 
-        match state.entries.remove(key) {
-            Some(entry)
-                if entry.pending.expires_at > now && entry.pending.session_id == session =>
-            {
-                Ok(entry.pending)
+        let snapshot = match state.entries.get(key) {
+            None => {
+                return Err(TakeError {
+                    error: expired_error(key),
+                    body_temp: None,
+                });
             }
-            _ => Err(AppError::ConfirmationExpired(format!(
-                "confirmation `{key}` is missing, expired, or belongs to another session"
-            ))),
+            Some(entry) => (
+                entry.pending.expires_at <= now,
+                entry.pending.body_temp.clone(),
+                entry.pending.session_id != session,
+            ),
+        };
+        let (expired, body_temp, wrong_session) = snapshot;
+
+        if expired {
+            state.entries.remove(key);
+            return Err(TakeError {
+                error: expired_error(key),
+                body_temp,
+            });
         }
+        if wrong_session {
+            return Err(TakeError {
+                error: expired_error(key),
+                body_temp: None,
+            });
+        }
+
+        let entry = state.entries.remove(key).expect("entry was just observed");
+        Ok(entry.pending)
     }
 
     /// Remove and return the pending confirmation for `key`, if any. The
@@ -161,4 +208,10 @@ impl ConfirmStore {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+}
+
+fn expired_error(key: &str) -> Box<AppError> {
+    Box::new(AppError::ConfirmationExpired(format!(
+        "confirmation `{key}` is missing, expired, or belongs to another session"
+    )))
 }

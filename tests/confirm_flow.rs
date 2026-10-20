@@ -363,6 +363,122 @@ async fn expired_pending_is_rejected() {
 
             let calls = read_argv_log(&log);
             assert_eq!(calls.len(), 1, "no second CLI call after expiry");
+
+            // The expired body temp file must have been deleted by the replay.
+            let tmp = dir.path().join(".agently-cli-mcp/tmp");
+            let leftover = std::fs::read_dir(&tmp).map(|d| d.count()).unwrap_or(0);
+            assert_eq!(leftover, 0, "body temp file must be deleted on expiry");
+        },
+    )
+    .await;
+}
+
+fn reply_params() -> CallToolRequestParams {
+    CallToolRequestParams::new("mail_reply_message")
+        .with_arguments(args(json!({"id": "msg_1", "body": "hi"})))
+}
+
+#[tokio::test]
+async fn mrtr_reply_accept_reports_source_marked_read() {
+    let _guard = ENV_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("argv.log");
+    set_scenario("write_read_flow", &log);
+    let state = build_state(&dir, "elicit");
+
+    with_server(
+        state,
+        ProtocolVersion::V_2026_07_28,
+        true,
+        Elicit::Accept,
+        |client| async move {
+            let first = client.call_tool_once(reply_params()).await.unwrap();
+            let ir = match first {
+                CallToolResponse::InputRequired(ir) => ir,
+                other => panic!("expected InputRequired, got {other:?}"),
+            };
+            let pending_id = ir.request_state.clone().expect("request_state");
+
+            let mut responses = InputResponses::new();
+            responses.insert(
+                "confirm".to_string(),
+                json!({"action": "accept", "content": {"confirm": true}}),
+            );
+            let retry = reply_params()
+                .with_request_state(pending_id)
+                .with_input_responses(responses);
+            let second = client.call_tool_once(retry).await.unwrap();
+            match second {
+                CallToolResponse::Complete(result) => {
+                    let sc = result
+                        .structured_content
+                        .as_ref()
+                        .expect("structured content");
+                    assert_eq!(sc["ok"], true);
+                    let side_effects = sc["meta"]["side_effects"]
+                        .as_array()
+                        .expect("side_effects array");
+                    assert!(
+                        side_effects
+                            .iter()
+                            .any(|v| v.as_str() == Some("source_marked_read")),
+                        "an accepted MRTR reply must report source_marked_read"
+                    );
+                }
+                other => panic!("expected Complete, got {other:?}"),
+            }
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn mrtr_reply_decline_reports_source_marked_read() {
+    let _guard = ENV_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("argv.log");
+    set_scenario("write_read_flow", &log);
+    let state = build_state(&dir, "elicit");
+
+    with_server(
+        state,
+        ProtocolVersion::V_2026_07_28,
+        true,
+        Elicit::Decline,
+        |client| async move {
+            let first = client.call_tool_once(reply_params()).await.unwrap();
+            let ir = match first {
+                CallToolResponse::InputRequired(ir) => ir,
+                other => panic!("expected InputRequired, got {other:?}"),
+            };
+            let pending_id = ir.request_state.clone().expect("request_state");
+
+            let mut responses = InputResponses::new();
+            responses.insert("confirm".to_string(), json!({"action": "decline"}));
+            let retry = reply_params()
+                .with_request_state(pending_id)
+                .with_input_responses(responses);
+            let second = client.call_tool_once(retry).await.unwrap();
+            match second {
+                CallToolResponse::Complete(result) => {
+                    let sc = result
+                        .structured_content
+                        .as_ref()
+                        .expect("structured content");
+                    assert_eq!(sc["status"], "declined");
+                    assert_eq!(sc["action"], "reply");
+                    let side_effects = sc["meta"]["side_effects"]
+                        .as_array()
+                        .expect("side_effects array");
+                    assert!(
+                        side_effects
+                            .iter()
+                            .any(|v| v.as_str() == Some("source_marked_read")),
+                        "a declined MRTR reply must report source_marked_read"
+                    );
+                }
+                other => panic!("expected Complete, got {other:?}"),
+            }
         },
     )
     .await;

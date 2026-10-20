@@ -389,3 +389,59 @@ async fn forward_rejects_empty_body() {
     )
     .await;
 }
+
+#[tokio::test]
+async fn token_mode_reply_reports_source_marked_read() {
+    let _guard = ENV_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("argv.log");
+    set_scenario("write_read_flow", &log);
+    let state = build_state(&dir, "token");
+
+    with_server(
+        state,
+        ProtocolVersion::V_2025_11_25,
+        false,
+        Elicit::Accept,
+        |client| async move {
+            let first = client
+                .call_tool(
+                    CallToolRequestParams::new("mail_reply_message")
+                        .with_arguments(args(json!({"id": "msg_1", "body": "hi"}))),
+                )
+                .await
+                .unwrap();
+            let ctk = first.structured_content.as_ref().unwrap()["confirmation_token"]
+                .as_str()
+                .unwrap()
+                .to_string();
+
+            let second = client
+                .call_tool(
+                    CallToolRequestParams::new("mail_reply_message").with_arguments(args(json!({
+                        "id": "msg_1",
+                        "body": "hi",
+                        "confirmation_token": ctk,
+                    }))),
+                )
+                .await
+                .unwrap();
+
+            let sc2 = second
+                .structured_content
+                .as_ref()
+                .expect("structured content");
+            assert_eq!(sc2["ok"], true);
+            let side_effects = sc2["meta"]["side_effects"]
+                .as_array()
+                .expect("side_effects array");
+            assert!(
+                side_effects
+                    .iter()
+                    .any(|v| v.as_str() == Some("source_marked_read")),
+                "an accepted token-mode reply must report source_marked_read"
+            );
+        },
+    )
+    .await;
+}
