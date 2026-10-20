@@ -5,6 +5,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use crate::cli_proc::locate;
+use crate::cli_proc::locate_windows::{self, CommandSpec};
 use crate::cli_proc::status;
 use crate::cli_proc::{CliOutcome, CliResult};
 use crate::config::CliConfig;
@@ -38,17 +39,27 @@ impl Runner {
 
     /// Run the CLI with the given arguments and timeout, returning raw output.
     pub async fn run(&self, args: &[String], timeout: Duration) -> Result<CliResult, AppError> {
-        let mut cmd = tokio::process::Command::new(&self.bin);
-        cmd.args(args)
-            .current_dir(&self.workdir)
+        let mut cmd = match locate_windows::shape_command(&self.bin, args)? {
+            CommandSpec::Direct { program, args } => {
+                let mut cmd = tokio::process::Command::new(&program);
+                cmd.args(args);
+                cmd
+            }
+            CommandSpec::CmdExe { command } => {
+                let mut cmd = tokio::process::Command::new(comspec());
+                cmd.arg("/d").arg("/s").arg("/c").arg(command);
+                cmd
+            }
+        };
+        cmd.current_dir(&self.workdir)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
 
-        let child = cmd.spawn().map_err(|e| {
-            AppError::CliError(format!("failed to spawn `{}`: {e}", self.bin.display()))
-        })?;
+        let child = cmd
+            .spawn()
+            .map_err(|e| AppError::CliError(format!("failed to spawn CLI: {e}")))?;
 
         let output =
             tokio::time::timeout(timeout, async move { child.wait_with_output().await }).await;
@@ -78,4 +89,11 @@ impl Runner {
         let result = self.run(args, timeout).await?;
         status::classify(&result.stdout, &result.stderr, result.exit_code)
     }
+}
+
+/// Resolve `cmd.exe` for the batch-script fallback, honoring `%COMSPEC%`.
+fn comspec() -> PathBuf {
+    std::env::var_os("COMSPEC")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("cmd.exe"))
 }
