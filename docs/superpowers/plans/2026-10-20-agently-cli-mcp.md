@@ -542,7 +542,8 @@ git commit -m "feat: add confirmation store and deterministic summary builder"
 **Interfaces:**
 - Consumes: `Runner`, `Sandbox`, `ConfirmStore`, `SearchStore`, `Config`.
 - Produces:
-  - `AppState { cfg, runner, sandbox, confirm, search, session_id, limits: Arc<RwLock<AttachmentLimits>> }`.
+  - `AppState { cfg, runner, sandbox, confirm, search, session_id, limits: Arc<RwLock<AttachmentLimits>>, watch_lock: Arc<tokio::sync::Mutex<()>> }`.
+  - `AppState::with_session(&self, session_id: String) -> AppState` clones all shared `Arc`s and replaces the session ID (used by the HTTP factory).
   - `build_server(state: Arc<AppState>) -> MailServer`.
   - `MailServer` implements `ServerHandler`; tool names exactly `mail_get_account`, `mail_refresh_auth`, `mail_list_messages`, `mail_get_message`, `mail_search_messages`, `mail_download_attachment`.
   - `result::ok(tool, data, meta) -> CallToolResult`, `result::err(tool, &AppError) -> CallToolResult`.
