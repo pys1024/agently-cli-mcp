@@ -495,11 +495,12 @@ struct Runner {
 - 会话管理默认 `LocalSessionManager`；v1 不提供分布式会话存储。
 - 健康检查：`GET /healthz` 返回 `{"ok":true,"version":...}`，不含敏感信息。
 - 默认只监听 loopback。
-- 绑定非 loopback 地址时**必须**设置 `AGENTLY_MCP_HTTP_TOKEN` 或 `--http-token-file`，否则拒绝启动。
-- 认证：`Authorization: Bearer <token>`，常量时间比较；`/healthz` 可豁免。
+- **认证默认关闭**：未配置 `--http-token` / `--http-token-file` 时，HTTP 端点不要求认证。
+- 配置了 token 后，所有 `/mcp` 请求必须带 `Authorization: Bearer <token>`，常量时间比较；`/healthz` 豁免。
+- 绑定非 loopback 且未配置 token 时**允许启动**，但必须向 stderr 打印醒目警告（邮件收发完全开放）。生产环境应配置 token 或放在可信反向代理之后。
 - **Host 校验**：rmcp 默认只允许 `localhost`、`127.0.0.1`、`::1`，否则在认证前返回 403。通过反向代理暴露时必须显式配置：
   - `--http-allowed-host mail.example.com`（可重复）
-  - 或 `--http-disable-host-validation`（仅在已启用 Bearer token 且网络可信时使用）
+  - 或 `--http-disable-host-validation`（仅在可信网络使用；建议同时配置 token）
   - 默认推荐部署方式仍是「代理与 Server 同机，`--listen 127.0.0.1:8787`，代理转发并设置 `Host`」。
 - 启用 `StreamableHttpServerConfig::enforce_origin_validation`；CORS 默认关闭，需要时 `--cors-origin` 显式允许。
 - 不内置 TLS；对外部署由反向代理终止 TLS。
@@ -604,7 +605,7 @@ agently-cli-mcp/
 | 参数 | 环境变量 | 默认 | 说明 |
 |---|---|---|---|
 | `--transport <stdio\|http>` | `AGENTLY_MCP_TRANSPORT` | `stdio` | 传输方式 |
-| `--config <PATH>` | `AGENTLY_MCP_CONFIG` | `./agently-cli-mcp.toml` | 配置文件 |
+| `--config <PATH>` | `AGENTLY_MCP_CONFIG` | `./config.toml` | 配置文件 |
 | `--no-config` | — | false | 忽略默认配置文件 |
 | `--print-config` | — | — | 打印合并后的配置（脱敏）后退出 |
 | `--check` | — | — | 检查 CLI、版本、授权、工作目录后退出 |
@@ -649,10 +650,10 @@ agently-cli-mcp/
 | 参数 | 环境变量 | 默认 | 说明 |
 |---|---|---|---|
 | `--listen <ADDR>` | `AGENTLY_MCP_LISTEN` | `127.0.0.1:8787` | 监听地址 |
-| `--http-token <TOKEN>` | `AGENTLY_MCP_HTTP_TOKEN` | 空 | Bearer token；非 loopback 必填 |
+| `--http-token <TOKEN>` | `AGENTLY_MCP_HTTP_TOKEN` | 空 | 可选；配置后强制 Bearer 认证 |
 | `--http-token-file <PATH>` | `AGENTLY_MCP_HTTP_TOKEN_FILE` | 空 | 从文件读 token |
 | `--http-allowed-host <HOST>` | `AGENTLY_MCP_HTTP_ALLOWED_HOSTS` | loopback | 可重复；反向代理域名必须加入 |
-| `--http-disable-host-validation` | `AGENTLY_MCP_HTTP_DISABLE_HOST_VALIDATION` | false | 仅可信网络；必须已有 token |
+| `--http-disable-host-validation` | `AGENTLY_MCP_HTTP_DISABLE_HOST_VALIDATION` | false | 仅可信网络；建议同时配置 token |
 | `--cors-origin <ORIGIN>` | `AGENTLY_MCP_CORS_ORIGINS` | 空 | 可重复 |
 | `--session-idle-secs <SECS>` | `AGENTLY_MCP_SESSION_IDLE_SECS` | `300` | HTTP 会话空闲超时 |
 
@@ -695,7 +696,7 @@ agently-cli-mcp --check --print-config
 
 - 格式：TOML。
 - 优先级：**命令行参数 > 环境变量 > 配置文件 > 内置默认值**。
-- 默认路径：**进程当前目录下的 `./agently-cli-mcp.toml`**。
+- 默认路径：**进程当前目录下的 `./config.toml`**。
   - 不读取用户主目录或系统配置目录；避免隐式配置导致「本机行为与仓库不一致」。
   - `--config <PATH>` 可显式指定任意路径；`--no-config` 完全忽略配置文件。
   - 默认文件不存在时静默使用内置默认值；`--config` 指定的文件不存在则报错。
@@ -782,7 +783,7 @@ session_idle_secs = 300
 | P1 CLI 适配 | locate（真实二进制 + Windows shim）、进程组/Job Object、body-file、状态判定、假 CLI | 覆盖实测状态矩阵；超时能杀掉整棵进程树 |
 | P2 只读工具 | account/refresh/list/get/search/download + 搜索上下文 | stdio 端到端可列出并读取真实邮件；翻页只传 cursor 正确续页 |
 | P3 写工具与确认 | confirm store、summary、MRTR + legacy elicitation + token/never + 5 个写工具 | 新旧协议与 token 模式通过；拒绝不发信/不删除；如实报告已读副作用；trash/delete 不被 never 绕过 |
-| P4 双传输 | stdio + Streamable HTTP + 鉴权/会话 | 两种传输跑同一套工具测试；非 loopback 无 token 拒绝启动 |
+| P4 双传输 | stdio + Streamable HTTP + 可选鉴权/会话 | 两种传输跑同一套工具测试；配置 token 后未认证请求被拒 |
 | P5 参数与配置 | 全部 flag/env、TOML、`--print-config`、`--check` | 优先级与未知字段测试通过；示例配置可用 |
 | P6 watch 与发布 | watch 有界轮询、5 目标构建、Release | 5 个二进制可下载并通过冒烟；checksums 与 README 完整 |
 
@@ -797,11 +798,11 @@ session_idle_secs = 300
 | 分发 | 仅 GitHub Releases 二进制，不做 npm 平台包 |
 | 代码签名 | 不签名；README 提供 Gatekeeper/SmartScreen 处理说明 |
 | watch | 进 v1；默认 30 秒，上限 120 秒；工具描述明确说明阻塞 |
-| 配置文件 | 支持可选 TOML；默认读取当前目录 `./agently-cli-mcp.toml` |
+| 配置文件 | 支持可选 TOML；默认读取当前目录 `./config.toml` |
 | 配置优先级 | 命令行 > 环境变量 > 配置文件 > 默认值 |
 | 确认默认值 | `elicit`；旧协议用 `peer.elicit`，客户端不支持时降级 `token` |
 | `--read-only` | 禁用发信/删除/改凭据；保留读类与下载；工具从 `tools/list` 省略 |
-| HTTP 默认 | 监听 `127.0.0.1:8787`；非 loopback 强制 Bearer token |
+| HTTP 默认 | 监听 `127.0.0.1:8787`；默认不认证，配置 token 后才强制 Bearer |
 
 无剩余阻塞性问题。下一步进入实现计划。
 

@@ -18,7 +18,7 @@
 - Distribution: GitHub Releases binaries only. No npm platform packages. No code signing.
 - Never bundle or reimplement `agently-cli`; invoke the npm-installed binary.
 - stdio: stdout carries JSON-RPC only; all logs go to stderr.
-- Config precedence: CLI flags > environment variables > `./agently-cli-mcp.toml` > built-in defaults.
+- Config precedence: CLI flags > environment variables > `./config.toml` > built-in defaults.
 - Defaults: transport `stdio`, confirm `elicit`, watch `30s` (max `120s`), max body `50000` chars, HTTP `127.0.0.1:8787`, max concurrency `1`.
 - Write operations are never auto-retried. Confirmation tokens are never logged in full.
 - `send/reply/forward` bodies always go through `--body-file`.
@@ -43,7 +43,7 @@
 - Create: `Cargo.toml`, `rust-toolchain.toml`, `.gitignore`
 - Create: `src/lib.rs`, `src/main.rs`, `src/cli.rs`, `src/config.rs`, `src/error.rs`, `src/logging.rs`
 - Create: `tests/config_precedence.rs`
-- Create: `agently-cli-mcp.example.toml`
+- Create: `config.example.toml`
 
 **Interfaces:**
 - Consumes: nothing.
@@ -87,7 +87,7 @@ fn defaults_are_stable() {
 fn flag_beats_env_beats_file() {
     let dir = tempdir().unwrap();
     fs::write(
-        dir.path().join("agently-cli-mcp.toml"),
+        dir.path().join("config.toml"),
         "transport = \"http\"\n[logging]\nlevel = \"debug\"\n",
     )
     .unwrap();
@@ -101,7 +101,7 @@ fn flag_beats_env_beats_file() {
 fn config_file_is_read_from_cwd() {
     let dir = tempdir().unwrap();
     fs::write(
-        dir.path().join("agently-cli-mcp.toml"),
+        dir.path().join("config.toml"),
         "transport = \"http\"\n[http]\nlisten = \"0.0.0.0:9000\"\n",
     )
     .unwrap();
@@ -113,7 +113,7 @@ fn config_file_is_read_from_cwd() {
 #[test]
 fn unknown_field_is_rejected() {
     let dir = tempdir().unwrap();
-    fs::write(dir.path().join("agently-cli-mcp.toml"), "nope = 1\n").unwrap();
+    fs::write(dir.path().join("config.toml"), "nope = 1\n").unwrap();
     let err = load_with_sources(args(&[]), &HashMap::new(), dir.path()).unwrap_err();
     assert!(err.to_string().contains("unknown field"));
 }
@@ -192,7 +192,7 @@ predicates = "3"
 tempfile = "3"
 ```
 
-`src/config.rs` defines the structs listed in Interfaces. Use `#[serde(deny_unknown_fields)]` on every file-side struct. `Config::load_with_sources` resolves the file at `cwd/agently-cli-mcp.toml` unless `--config` is set or `--no-config` is passed. Unknown env values return `ConfigError::Invalid`.
+`src/config.rs` defines the structs listed in Interfaces. Use `#[serde(deny_unknown_fields)]` on every file-side struct. `Config::load_with_sources` resolves the file at `cwd/config.toml` unless `--config` is set or `--no-config` is passed. Unknown env values return `ConfigError::Invalid`.
 
 `src/cli.rs` uses `#[derive(Parser)]` and exposes every flag from spec §13, all as `Option<T>` (lists as `Vec<String>` empty = unset).
 
@@ -212,7 +212,7 @@ Expected: PASS (5 tests).
 - [ ] **Step 7: Commit**
 
 ```bash
-git add Cargo.toml Cargo.lock rust-toolchain.toml .gitignore src tests/config_precedence.rs tests/cli_smoke.rs agently-cli-mcp.example.toml
+git add Cargo.toml Cargo.lock rust-toolchain.toml .gitignore src tests/config_precedence.rs tests/cli_smoke.rs config.example.toml
 git commit -m "feat: scaffold Rust MCP server with config and logging"
 ```
 
@@ -725,7 +725,10 @@ async fn healthz_is_public() { /* 200, no auth */ }
 async fn mcp_requires_bearer_token_when_configured() { /* 401 without, 200 with */ }
 
 #[tokio::test]
-async fn non_loopback_requires_token_at_startup() { /* config validation error */ }
+async fn no_token_means_open_access() { /* no Authorization -> tool call succeeds */ }
+
+#[tokio::test]
+async fn non_loopback_without_token_warns_but_starts() { /* startup succeeds; stderr contains a warning */ }
 
 #[tokio::test]
 async fn disallowed_host_is_rejected() { /* Host: evil.example -> 403 */ }
@@ -745,7 +748,7 @@ Use `axum::Router` with `nest_service("/mcp", StreamableHttpService::new(factory
 
 - [ ] **Step 4: Implement auth and Host validation**
 
-Bearer token from `--http-token` or file; compare with `subtle::ConstantTimeEq`. Configure `StreamableHttpServerConfig.allowed_hosts` from `--http-allowed-host`, defaulting to loopback. Refuse to start if `listen` is non-loopback and no token is configured.
+Bearer token from `--http-token` or file; compare with `subtle::ConstantTimeEq`. If no token is configured, skip the auth middleware entirely (open access). Configure `StreamableHttpServerConfig.allowed_hosts` from `--http-allowed-host`, defaulting to loopback. If `listen` is non-loopback and no token is configured, log a prominent warning but start normally.
 
 - [ ] **Step 5: Implement graceful shutdown**
 
@@ -770,7 +773,7 @@ git commit -m "feat: add Streamable HTTP transport with auth and host validation
 **Files:**
 - Modify: `src/cli.rs`, `src/config.rs`, `src/mcp/server.rs`, `src/main.rs`
 - Create: `tests/config_full.rs`, `tests/tool_filtering.rs`
-- Modify: `agently-cli-mcp.example.toml`
+- Modify: `config.example.toml`
 
 **Interfaces:**
 - Consumes: all previous modules.
@@ -783,7 +786,7 @@ git commit -m "feat: add Streamable HTTP transport with auth and host validation
 
 - [ ] **Step 1: Write failing precedence and validation tests**
 
-`tests/config_full.rs` covers HTTP token file, non-loopback without token, `--no-config`, explicit missing config, `read_only` + `allow` conflict, and `--watch-max-secs` clamping.
+`tests/config_full.rs` covers HTTP token file, non-loopback without token (warning, not error), `--no-config`, explicit missing config, `read_only` + `allow` conflict, and `--watch-max-secs` clamping.
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -794,7 +797,7 @@ Expected: FAIL.
 
 Add all flags from spec §13. Validate:
 
-- non-loopback + no token → error at startup;
+- non-loopback + no token → allowed, but a warning is logged at startup;
 - `allow` and `disabled` both non-empty → error;
 - `watch_max_secs` in 5..=120;
 - `max_body_chars` > 0;
@@ -810,12 +813,12 @@ Add all flags from spec §13. Validate:
 
 - [ ] **Step 6: Update the example config and verify `--print-config`**
 
-Ensure `agently-cli-mcp.example.toml` matches `Config` exactly and `--print-config` output contains no token value.
+Ensure `config.example.toml` matches `Config` exactly and `--print-config` output contains no token value.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/cli.rs src/config.rs src/mcp/server.rs src/main.rs tests/config_full.rs tests/tool_filtering.rs agently-cli-mcp.example.toml
+git add src/cli.rs src/config.rs src/mcp/server.rs src/main.rs tests/config_full.rs tests/tool_filtering.rs config.example.toml
 git commit -m "feat: complete CLI/config surface and tool filtering"
 ```
 
@@ -934,7 +937,7 @@ Include:
 - `agently-cli auth login` prerequisite;
 - confirmation modes and the fact that `token` mode lets the model self-confirm;
 - `--read-only` semantics and `mail_get_message` read side effect;
-- config file location `./agently-cli-mcp.toml` and precedence;
+- config file location `./config.toml` and precedence;
 - watch blocking warning;
 - unsigned binary instructions for macOS (`xattr -d com.apple.quarantine`) and Windows SmartScreen;
 - prompt-injection warning.
