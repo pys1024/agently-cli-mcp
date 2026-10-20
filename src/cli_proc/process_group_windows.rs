@@ -18,12 +18,12 @@ use crate::error::AppError;
 pub fn configure(_cmd: &mut Command) {}
 
 /// Terminate a spawned child immediately. Creates a Job Object, assigns the
-/// child, and terminates the job. This is a best-effort one-shot kill; the
-/// runner normally holds a [`ProcessTree`] from spawn so descendants are also
-/// inside the job.
+/// child, and terminates the job. `TerminateJobObject` is non-blocking, so this
+/// is a one-shot immediate kill; the runner normally holds a [`ProcessTree`]
+/// from spawn so descendants are also inside the job.
 pub fn terminate(child: &mut Child) {
     if let Ok(mut tree) = ProcessTree::attach(child) {
-        tree.terminate();
+        tree.kill_now();
     }
 }
 
@@ -73,8 +73,14 @@ impl ProcessTree {
         Ok(ProcessTree { job })
     }
 
-    /// Terminate every process in the job.
-    pub fn terminate(&mut self) {
+    /// Terminate every process in the job. `TerminateJobObject` is immediate
+    /// and non-blocking, so this is safe in both async and Drop contexts.
+    pub async fn terminate(&mut self) {
+        self.kill_now();
+    }
+
+    /// Immediate, non-blocking termination of the whole job.
+    fn kill_now(&mut self) {
         if self.job.is_null() {
             return;
         }
@@ -92,10 +98,7 @@ impl ProcessTree {
 
 impl Drop for ProcessTree {
     fn drop(&mut self) {
-        if !self.job.is_null() {
-            // KILL_ON_JOB_CLOSE terminates any processes still in the job.
-            unsafe { CloseHandle(self.job) };
-        }
+        self.kill_now();
     }
 }
 

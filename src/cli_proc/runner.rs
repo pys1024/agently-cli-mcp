@@ -78,13 +78,22 @@ impl Runner {
                     exit_code: output.status.code(),
                 })
             }
-            Ok(Err(e)) => Err(AppError::CliError(format!(
-                "failed to read CLI output: {e}"
-            ))),
-            Err(_elapsed) => Err(AppError::Timeout(format!(
-                "CLI timed out after {} ms",
-                timeout.as_millis()
-            ))),
+            Ok(Err(e)) => {
+                // The child has already been reaped; disarm so the empty group
+                // does not incur the graceful 2s termination.
+                tree.disarm();
+                Err(AppError::CliError(format!(
+                    "failed to read CLI output: {e}"
+                )))
+            }
+            Err(_elapsed) => {
+                // Graceful SIGTERM -> 2s -> SIGKILL of the whole tree.
+                tree.terminate().await;
+                Err(AppError::Timeout(format!(
+                    "CLI timed out after {} ms",
+                    timeout.as_millis()
+                )))
+            }
         }
     }
 

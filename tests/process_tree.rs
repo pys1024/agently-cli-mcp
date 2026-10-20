@@ -32,15 +32,25 @@ fn cli_config(bin: &str) -> CliConfig {
     }
 }
 
+/// Set the fake CLI scenario and clear any leftover coordination env vars.
+#[cfg(unix)]
+fn set_scenario(scenario: &str) {
+    unsafe {
+        std::env::set_var("FAKE_SCENARIO", scenario);
+        std::env::remove_var("FAKE_ARGV_LOG");
+        std::env::remove_var("FAKE_GRANDCHILD_PID");
+        std::env::remove_var("FAKE_SPAWN_GO");
+    }
+}
+
 /// Configure the fake CLI for the `spawn_child` scenario, recording the
 /// grandchild PID to `grandchild_pid`.
 #[cfg(unix)]
 fn set_spawn_child(argv_log: &Path, grandchild_pid: &Path) {
+    set_scenario("spawn_child");
     unsafe {
-        std::env::set_var("FAKE_SCENARIO", "spawn_child");
         std::env::set_var("FAKE_ARGV_LOG", argv_log);
         std::env::set_var("FAKE_GRANDCHILD_PID", grandchild_pid);
-        std::env::remove_var("FAKE_SPAWN_GO");
     }
 }
 
@@ -85,9 +95,36 @@ async fn timeout_kills_grandchild() {
     }
 }
 
+/// Two concurrent timeouts on the single-threaded `#[tokio::test]` runtime must
+/// overlap. If termination blocked the worker with `thread::sleep`, the two
+/// 2-second grace periods would serialize; with async `tokio::time::sleep` they
+/// overlap and both return promptly.
+#[cfg(unix)]
+#[tokio::test]
+async fn concurrent_timeouts_do_not_block() {
+    let _guard = ENV_LOCK.lock().await;
+    set_scenario("sleep");
+
+    let runner = Runner::new(&cli_config(fake_bin())).unwrap();
+
+    let start = Instant::now();
+    let (a, b) = tokio::join!(
+        runner.run(&[], Duration::from_millis(300)),
+        runner.run(&[], Duration::from_millis(300)),
+    );
+    let elapsed = start.elapsed();
+
+    assert_eq!(a.unwrap_err().code(), "TIMEOUT");
+    assert_eq!(b.unwrap_err().code(), "TIMEOUT");
+    assert!(
+        elapsed < Duration::from_millis(3500),
+        "concurrent timeouts serialized ({elapsed:?}); termination is blocking the worker"
+    );
+}
+
 #[cfg(windows)]
-#[test]
-fn job_object_kills_process_tree() {
+#[tokio::test]
+async fn job_object_kills_process_tree() {
     use agently_cli_mcp::cli_proc::process::ProcessTree;
 
     let dir = tempdir().unwrap();
@@ -115,7 +152,7 @@ fn job_object_kills_process_tree() {
 
     let grandchild_pid = wait_for_pid_file(&pid_file, Duration::from_secs(5));
 
-    tree.terminate();
+    tree.terminate().await;
 
     assert!(
         wait_until_dead(parent_pid, Duration::from_secs(5)),
