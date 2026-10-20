@@ -18,6 +18,7 @@ const SUCCESS_LIST: &str =
 const SEARCH_PAGE: &str =
     r#"{"ok":true,"data":{"messages":[{"message_id":"msg_1"}],"next_cursor":"cur_1"}}"#;
 const QUEUED: &str = r#"{"ok":true,"data":{"queued":true}}"#;
+const READ_SOURCE: &str = r#"{"ok":true,"data":{"id":"msg_1","subject":"Original subject","from":"sender@example.com","body":"hello"}}"#;
 const ERROR_404: &str =
     r#"{"ok":false,"error":{"type":"api_error","code":404,"message":"Resource not found"}}"#;
 const EVENT_1: &str = r#"{"event":"arrived","id":"msg_1"}"#;
@@ -67,6 +68,24 @@ fn main() {
         }
         "confirm_then_success" => {
             if argv.iter().any(|a| a == "--confirmation-token") {
+                println!("{QUEUED}");
+            } else {
+                println!("{CONFIRM_ENVELOPE}");
+            }
+            exit(0);
+        }
+        "confirm_confirmed" => {
+            if argv.iter().any(|a| a == "--confirmed") {
+                println!("{QUEUED}");
+            } else {
+                println!("{CONFIRM_ENVELOPE}");
+            }
+            exit(0);
+        }
+        "write_read_flow" => {
+            if argv.get(1).map(|s| s.as_str()) == Some("+read") {
+                println!("{READ_SOURCE}");
+            } else if argv.iter().any(|a| a == "--confirmation-token") {
                 println!("{QUEUED}");
             } else {
                 println!("{CONFIRM_ENVELOPE}");

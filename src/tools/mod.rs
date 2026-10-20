@@ -4,6 +4,7 @@
 pub mod account;
 pub mod attachments;
 pub mod read;
+pub mod write;
 
 use std::time::Duration;
 

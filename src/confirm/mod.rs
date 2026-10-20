@@ -7,6 +7,7 @@
 //! module renders the human-facing confirmation prompt from the validated
 //! tool inputs, never from the CLI's lossy merged summary.
 
+pub mod mrtr;
 pub mod store;
 pub mod summary;
 

@@ -3,8 +3,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use rmcp::handler::server::tool::{InputResponses, RequestState};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResponse;
+use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ErrorData, tool, tool_router};
 use serde_json::{Map, Value};
 
@@ -226,5 +228,195 @@ impl MailServer {
             Ok((data, meta)) => Ok(result::ok("mail_download_attachment", data, meta).into()),
             Err(e) => Ok(result::err("mail_download_attachment", &e).into()),
         }
+    }
+
+    #[tool(
+        name = "mail_send_message",
+        title = "Send an email",
+        description = "Send a new email. This is a write operation that requires human confirmation before the message is actually sent.",
+        annotations(open_world_hint = true)
+    )]
+    async fn mail_send_message(
+        &self,
+        Parameters(args): Parameters<tools::write::SendArgs>,
+        RequestState(request_state): RequestState,
+        InputResponses(input_responses): InputResponses,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        let confirmation_token = args.confirmation_token.clone();
+        let fingerprint = tools::write::args_fingerprint(&args);
+        let prepared = if request_state.is_none() && confirmation_token.is_none() {
+            match tools::write::prepare_send(&self.state, args).await {
+                Ok(request) => Some(request),
+                Err(e) => return Ok(result::err("mail_send_message", &e).into()),
+            }
+        } else {
+            None
+        };
+        tools::write::execute(
+            "mail_send_message",
+            &self.state,
+            context,
+            tools::write::WriteCall {
+                request_state,
+                input_responses,
+                confirmation_token,
+                fingerprint,
+                prepared,
+            },
+        )
+        .await
+    }
+
+    #[tool(
+        name = "mail_reply_message",
+        title = "Reply to an email",
+        description = "Reply to an email. This is a write operation that requires human confirmation before the reply is actually sent. Reading the original to build the confirmation summary marks it as read.",
+        annotations(open_world_hint = true)
+    )]
+    async fn mail_reply_message(
+        &self,
+        Parameters(args): Parameters<tools::write::ReplyArgs>,
+        RequestState(request_state): RequestState,
+        InputResponses(input_responses): InputResponses,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        let confirmation_token = args.confirmation_token.clone();
+        let fingerprint = tools::write::args_fingerprint(&args);
+        let prepared = if request_state.is_none() && confirmation_token.is_none() {
+            match tools::write::prepare_reply(&self.state, args).await {
+                Ok(request) => Some(request),
+                Err(e) => return Ok(result::err("mail_reply_message", &e).into()),
+            }
+        } else {
+            None
+        };
+        tools::write::execute(
+            "mail_reply_message",
+            &self.state,
+            context,
+            tools::write::WriteCall {
+                request_state,
+                input_responses,
+                confirmation_token,
+                fingerprint,
+                prepared,
+            },
+        )
+        .await
+    }
+
+    #[tool(
+        name = "mail_forward_message",
+        title = "Forward an email",
+        description = "Forward an email. This is a write operation that requires human confirmation before the forward is actually sent. Reading the original to build the confirmation summary marks it as read.",
+        annotations(open_world_hint = true)
+    )]
+    async fn mail_forward_message(
+        &self,
+        Parameters(args): Parameters<tools::write::ForwardArgs>,
+        RequestState(request_state): RequestState,
+        InputResponses(input_responses): InputResponses,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        let confirmation_token = args.confirmation_token.clone();
+        let fingerprint = tools::write::args_fingerprint(&args);
+        let prepared = if request_state.is_none() && confirmation_token.is_none() {
+            match tools::write::prepare_forward(&self.state, args).await {
+                Ok(request) => Some(request),
+                Err(e) => return Ok(result::err("mail_forward_message", &e).into()),
+            }
+        } else {
+            None
+        };
+        tools::write::execute(
+            "mail_forward_message",
+            &self.state,
+            context,
+            tools::write::WriteCall {
+                request_state,
+                input_responses,
+                confirmation_token,
+                fingerprint,
+                prepared,
+            },
+        )
+        .await
+    }
+
+    #[tool(
+        name = "mail_move_to_trash",
+        title = "Move an email to trash",
+        description = "Move an email to the trash folder. This is a write operation that requires human confirmation.",
+        annotations(destructive_hint = true)
+    )]
+    async fn mail_move_to_trash(
+        &self,
+        Parameters(args): Parameters<tools::write::TrashArgs>,
+        RequestState(request_state): RequestState,
+        InputResponses(input_responses): InputResponses,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        let confirmation_token = args.confirmation_token.clone();
+        let fingerprint = tools::write::args_fingerprint(&args);
+        let prepared = if request_state.is_none() && confirmation_token.is_none() {
+            match tools::write::prepare_trash(&self.state, args).await {
+                Ok(request) => Some(request),
+                Err(e) => return Ok(result::err("mail_move_to_trash", &e).into()),
+            }
+        } else {
+            None
+        };
+        tools::write::execute(
+            "mail_move_to_trash",
+            &self.state,
+            context,
+            tools::write::WriteCall {
+                request_state,
+                input_responses,
+                confirmation_token,
+                fingerprint,
+                prepared,
+            },
+        )
+        .await
+    }
+
+    #[tool(
+        name = "mail_delete_messages",
+        title = "Permanently delete messages",
+        description = "Permanently delete one message or all messages in the trash folder. This is a destructive write operation that requires human confirmation.",
+        annotations(destructive_hint = true)
+    )]
+    async fn mail_delete_messages(
+        &self,
+        Parameters(args): Parameters<tools::write::DeleteArgs>,
+        RequestState(request_state): RequestState,
+        InputResponses(input_responses): InputResponses,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        let confirmation_token = args.confirmation_token.clone();
+        let fingerprint = tools::write::args_fingerprint(&args);
+        let prepared = if request_state.is_none() && confirmation_token.is_none() {
+            match tools::write::prepare_delete(&self.state, args).await {
+                Ok(request) => Some(request),
+                Err(e) => return Ok(result::err("mail_delete_messages", &e).into()),
+            }
+        } else {
+            None
+        };
+        tools::write::execute(
+            "mail_delete_messages",
+            &self.state,
+            context,
+            tools::write::WriteCall {
+                request_state,
+                input_responses,
+                confirmation_token,
+                fingerprint,
+                prepared,
+            },
+        )
+        .await
     }
 }
