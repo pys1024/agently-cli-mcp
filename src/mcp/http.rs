@@ -81,19 +81,29 @@ pub async fn serve(
     Ok(())
 }
 
-/// Resolve the bearer token from `http_token` or `http_token_file` (trimmed).
+/// Resolve the bearer token from `http_token` or `http_token_file`. A token
+/// that is empty or only whitespace is treated as "no token configured", so the
+/// endpoint stays open and the non-loopback warning still applies.
 fn resolve_token(cfg: &HttpConfig) -> Result<Option<String>, AppError> {
-    if let Some(token) = &cfg.http_token {
-        return Ok(Some(token.clone()));
-    }
-    if let Some(path) = &cfg.http_token_file {
-        let token = std::fs::read_to_string(path)
-            .map_err(|e| AppError::Other(format!("failed to read HTTP token file `{path}`: {e}")))?
-            .trim()
-            .to_string();
-        return Ok(Some(token));
-    }
-    Ok(None)
+    let raw = if let Some(token) = &cfg.http_token {
+        Some(token.clone())
+    } else if let Some(path) = &cfg.http_token_file {
+        Some(
+            std::fs::read_to_string(path)
+                .map_err(|e| {
+                    AppError::Other(format!("failed to read HTTP token file `{path}`: {e}"))
+                })?
+                .trim()
+                .to_string(),
+        )
+    } else {
+        None
+    };
+
+    Ok(raw.and_then(|token| {
+        let token = token.trim().to_string();
+        if token.is_empty() { None } else { Some(token) }
+    }))
 }
 
 /// Bearer-token middleware: requires `Authorization: Bearer <token>` with a
@@ -121,7 +131,10 @@ async fn healthz() -> Json<serde_json::Value> {
     }))
 }
 
-/// Wait for Ctrl-C, SIGTERM (unix), or the shutdown token.
+/// Wait for Ctrl-C, SIGTERM (unix), or the shutdown token, then cancel the
+/// token so rmcp closes active sessions/SSE streams before the graceful
+/// shutdown drain completes. Cancelling is idempotent, so the token path is a
+/// no-op (the token is already cancelled there).
 async fn shutdown_signal(shutdown: CancellationToken) {
     #[cfg(unix)]
     {
@@ -130,14 +143,15 @@ async fn shutdown_signal(shutdown: CancellationToken) {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {},
             _ = sigterm.recv() => {},
-            _ = shutdown.cancelled_owned() => {},
+            _ = shutdown.cancelled() => {},
         }
     }
     #[cfg(not(unix))]
     {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {},
-            _ = shutdown.cancelled_owned() => {},
+            _ = shutdown.cancelled() => {},
         }
     }
+    shutdown.cancel();
 }

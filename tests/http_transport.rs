@@ -119,6 +119,37 @@ async fn raw_status(addr: SocketAddr, method: &str, path: &str, host: &str) -> S
     StatusCode::from_u16(code).unwrap()
 }
 
+/// Spawn a server with `http_cfg` and assert `/mcp` accepts an unauthenticated
+/// initialize request (i.e. the endpoint is open).
+async fn assert_open_access(http_cfg: HttpConfig) {
+    let dir = tempfile::tempdir().unwrap();
+    let state = build_state(&dir, &http_cfg);
+    let (addr, ct) = spawn_server(state, http_cfg).await;
+    wait_ready(addr).await;
+
+    let client = reqwest::Client::new();
+    let init = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": { "name": "test", "version": "1.0" }
+        }
+    });
+    let resp = client
+        .post(format!("http://{addr}/mcp"))
+        .header("Accept", "application/json, text/event-stream")
+        .json(&init)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    ct.cancel();
+}
+
 #[tokio::test]
 async fn healthz_is_public() {
     let dir = tempfile::tempdir().unwrap();
@@ -291,4 +322,80 @@ async fn tool_call_over_http_works() {
 
     client.cancel().await.unwrap();
     ct.cancel();
+}
+
+#[tokio::test]
+async fn empty_or_whitespace_token_means_open_access() {
+    // Empty token.
+    let mut cfg = default_http_cfg(free_port().await);
+    cfg.http_token = Some(String::new());
+    assert_open_access(cfg).await;
+
+    // Whitespace-only token.
+    let mut cfg = default_http_cfg(free_port().await);
+    cfg.http_token = Some("   ".to_string());
+    assert_open_access(cfg).await;
+
+    // Whitespace-only token file.
+    let token_dir = tempfile::tempdir().unwrap();
+    let token_file = token_dir.path().join("token");
+    std::fs::write(&token_file, "  \n\t\n").unwrap();
+    let mut cfg = default_http_cfg(free_port().await);
+    cfg.http_token_file = Some(token_file.to_string_lossy().to_string());
+    assert_open_access(cfg).await;
+}
+
+/// SIGTERM must cancel the shutdown token, close active SSE sessions, and let
+/// the server exit gracefully within a bound — even while a client holds an
+/// open SSE stream.
+#[cfg(unix)]
+#[tokio::test]
+async fn sigterm_shuts_down_within_bound() {
+    use nix::sys::signal::{Signal, kill};
+    use nix::unistd::Pid;
+
+    let listen = free_port().await;
+
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_agently-cli-mcp"))
+        .args([
+            "--transport",
+            "http",
+            "--listen",
+            &format!("{listen}"),
+            "--cli",
+            fake_bin(),
+            "--no-config",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn server");
+
+    wait_ready(listen).await;
+
+    // Open a session plus its long-lived SSE stream so graceful shutdown has a
+    // connection to drain.
+    let transport = StreamableHttpClientTransport::from_uri(format!("http://{listen}/mcp"));
+    let client = ().serve(transport).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let pid = child.id().expect("child pid");
+    kill(Pid::from_raw(pid as i32), Signal::SIGTERM).expect("SIGTERM");
+
+    let status = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
+    let status = match status {
+        Ok(Ok(status)) => status,
+        Ok(Err(e)) => panic!("wait failed: {e}"),
+        Err(_) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            panic!("server did not exit within 5s of SIGTERM");
+        }
+    };
+    assert!(
+        status.success(),
+        "graceful shutdown should exit 0, got {status}"
+    );
+
+    let _ = client.cancel().await;
 }
