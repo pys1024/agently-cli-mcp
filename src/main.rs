@@ -22,8 +22,10 @@ async fn main() -> error::Result<()> {
 
     match cfg.transport {
         Transport::Stdio => mcp::stdio::serve(cfg).await,
-        Transport::Http => Err(error::AppError::Other(
-            "HTTP transport is not implemented yet".to_string(),
-        )),
+        Transport::Http => {
+            let http_cfg = cfg.http.clone();
+            let state = mcp::build_state(cfg)?;
+            mcp::http::serve(state, &http_cfg, tokio_util::sync::CancellationToken::new()).await
+        }
     }
 }

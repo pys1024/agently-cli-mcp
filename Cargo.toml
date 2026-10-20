@@ -25,6 +25,7 @@ required-features = ["test-fixtures"]
 [dependencies]
 rmcp = { version = "=3.5.1", features = ["server", "macros", "schemars", "transport-io", "transport-streamable-http-server", "elicitation", "request-state"] }
 tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "process", "io-std", "io-util", "signal", "time", "sync", "fs", "net"] }
+tokio-util = "0.7"
 axum = "0.8"
 clap = { version = "4.5", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
@@ -52,6 +53,7 @@ tokio = { version = "1.54", features = ["full"] }
 assert_cmd = "2"
 predicates = "3"
 tempfile = "3"
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
 
 [target.'cfg(unix)'.dev-dependencies]
 nix = { version = "0.30", features = ["signal", "process"] }
