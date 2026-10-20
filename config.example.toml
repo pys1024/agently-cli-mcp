@@ -40,5 +40,6 @@ disabled = []
 [http]
 listen = "127.0.0.1:8787"
 allowed_hosts = ["localhost", "127.0.0.1", "::1"]
+disable_host_validation = false
 cors_origins = []
 session_idle_secs = 300

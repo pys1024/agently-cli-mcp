@@ -23,15 +23,15 @@ pub struct CliArgs {
 
     /// Ignore the default config file.
     #[arg(long, action = clap::ArgAction::SetTrue)]
-    pub no_config: Option<bool>,
+    pub no_config: bool,
 
     /// Print the merged config (secrets redacted) and exit.
     #[arg(long, action = clap::ArgAction::SetTrue)]
-    pub print_config: Option<bool>,
+    pub print_config: bool,
 
     /// Check the CLI, version, auth, and workdir, then exit.
     #[arg(long, action = clap::ArgAction::SetTrue)]
-    pub check: Option<bool>,
+    pub check: bool,
 
     /// Log level: error, warn, info, debug, or trace.
     #[arg(long)]
@@ -79,7 +79,7 @@ pub struct CliArgs {
 
     /// Disable write and credential tools.
     #[arg(long, action = clap::ArgAction::SetTrue)]
-    pub read_only: Option<bool>,
+    pub read_only: bool,
 
     /// Disable a named tool (repeatable).
     #[arg(long)]
@@ -115,7 +115,7 @@ pub struct CliArgs {
 
     /// Disable Host header validation (trusted networks only).
     #[arg(long, action = clap::ArgAction::SetTrue)]
-    pub http_disable_host_validation: Option<bool>,
+    pub http_disable_host_validation: bool,
 
     /// Allowed CORS origin (repeatable).
     #[arg(long)]

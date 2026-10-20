@@ -85,6 +85,42 @@ impl Config {
         }
         value
     }
+
+    /// Validate cross-field and numeric invariants, returning the first
+    /// violation as a [`ConfigError::Invalid`].
+    ///
+    /// Rules (spec §13.3 / §13.2):
+    /// - `allow` and `disabled` tool lists are mutually exclusive;
+    /// - `watch_max_secs` must be within `5..=120`;
+    /// - `max_body_chars` must be greater than `0`;
+    /// - `max_concurrency` must be at least `1`.
+    ///
+    /// Non-loopback listen without a token is *not* an error here: it is
+    /// allowed and only warned about at HTTP serve time.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if !self.tools.allow.is_empty() && !self.tools.disabled.is_empty() {
+            return Err(ConfigError::Invalid(
+                "`allow` and `disabled` tool lists are mutually exclusive".to_string(),
+            ));
+        }
+        if !(5..=120).contains(&self.cli.watch_max_secs) {
+            return Err(ConfigError::Invalid(format!(
+                "watch_max_secs must be between 5 and 120, got {}",
+                self.cli.watch_max_secs
+            )));
+        }
+        if self.limits.max_body_chars == 0 {
+            return Err(ConfigError::Invalid(
+                "max_body_chars must be greater than 0".to_string(),
+            ));
+        }
+        if self.cli.max_concurrency < 1 {
+            return Err(ConfigError::Invalid(
+                "max_concurrency must be at least 1".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// CLI execution configuration.
@@ -233,6 +269,7 @@ struct FileToolsConfig {
 struct FileHttpConfig {
     listen: Option<String>,
     allowed_hosts: Option<Vec<String>>,
+    disable_host_validation: Option<bool>,
     cors_origins: Option<Vec<String>>,
     session_idle_secs: Option<u64>,
 }
@@ -466,7 +503,9 @@ pub fn load_with_sources(
         cli.http_disable_host_validation,
         env.get("AGENTLY_MCP_HTTP_DISABLE_HOST_VALIDATION")
             .map(|s| s.as_str()),
-        None,
+        file.as_ref()
+            .and_then(|f| f.http.as_ref())
+            .and_then(|h| h.disable_host_validation),
         false,
         "http_disable_host_validation",
     )?;
@@ -509,7 +548,7 @@ pub fn load_with_sources(
         )?,
     };
 
-    Ok(Config {
+    let cfg = Config {
         transport,
         cli: cli_cfg,
         confirm: confirm_cfg,
@@ -518,7 +557,9 @@ pub fn load_with_sources(
         logging: logging_cfg,
         tools: tools_cfg,
         http: http_cfg,
-    })
+    };
+    cfg.validate()?;
+    Ok(cfg)
 }
 
 // ---------------------------------------------------------------------------
@@ -533,7 +574,7 @@ fn read_config_file(
     env: &HashMap<String, String>,
     cwd: &Path,
 ) -> Result<Option<FileConfig>, ConfigError> {
-    if cli.no_config.unwrap_or(false) {
+    if cli.no_config {
         return Ok(None);
     }
 
@@ -606,14 +647,14 @@ where
 }
 
 fn resolve_bool(
-    cli: Option<bool>,
+    cli: bool,
     env_val: Option<&str>,
     file: Option<bool>,
     default: bool,
     field: &str,
 ) -> Result<bool, ConfigError> {
-    if let Some(v) = cli {
-        return Ok(v);
+    if cli {
+        return Ok(true);
     }
     if let Some(s) = env_val {
         return parse_bool(s, field);
