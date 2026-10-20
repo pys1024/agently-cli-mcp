@@ -35,6 +35,15 @@ pub async fn get_account(state: &AppState) -> Result<(Value, Value), AppError> {
 /// Refresh the stored OAuth credentials.
 pub async fn refresh_auth(state: &AppState) -> Result<(Value, Value), AppError> {
     let start = Instant::now();
+
+    // Credential refresh must not race an in-flight watch: the watch holds the
+    // process-wide lock, so a refresh during a watch fails fast with
+    // WATCH_BUSY (spec §8) instead of rewriting credentials mid-poll.
+    let _guard = state
+        .watch_lock
+        .try_lock()
+        .map_err(|_| AppError::WatchBusy("a mail watch is already running".to_string()))?;
+
     let data = run_cli(
         state,
         &["auth".to_string(), "refresh".to_string()],

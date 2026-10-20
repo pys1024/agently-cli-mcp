@@ -13,6 +13,7 @@ use agently_cli_mcp::cli_proc::runner::Runner;
 use agently_cli_mcp::config;
 use agently_cli_mcp::guard::Sandbox;
 use agently_cli_mcp::mcp::{AppState, build_server};
+use agently_cli_mcp::tools::account::refresh_auth;
 use agently_cli_mcp::tools::read::{WatchArgs, watch_messages};
 use clap::Parser;
 use rmcp::model::CallToolRequestParams;
@@ -93,6 +94,15 @@ async fn wait_for_argv(log: &Path, lines: usize) {
     panic!("fake CLI never wrote the expected argv lines");
 }
 
+/// Read the fake CLI's argv log as a list of per-invocation argument vectors.
+fn read_argv_log(path: &Path) -> Vec<Vec<String>> {
+    std::fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
 #[tokio::test]
 async fn watch_blocks_until_timeout_and_returns_empty_events() {
     let _guard = ENV_LOCK.lock().await;
@@ -105,7 +115,7 @@ async fn watch_blocks_until_timeout_and_returns_empty_events() {
         let result = client
             .call_tool(
                 CallToolRequestParams::new("mail_watch_messages")
-                    .with_arguments(args(json!({ "timeout_seconds": 1 }))),
+                    .with_arguments(args(json!({ "timeout_seconds": 5 }))),
             )
             .await
             .unwrap();
@@ -125,12 +135,52 @@ async fn watch_blocks_until_timeout_and_returns_empty_events() {
             .as_u64()
             .expect("elapsed_ms is an integer");
         assert!(
-            elapsed_ms >= 1000,
-            "elapsed_ms must be at least 1000ms, got {elapsed_ms}"
+            elapsed_ms >= 5000,
+            "elapsed_ms must be at least 5000ms, got {elapsed_ms}"
         );
         assert!(
-            elapsed >= Duration::from_secs(1),
+            elapsed >= Duration::from_secs(5),
             "watch must block for the full timeout, got {elapsed:?}"
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn watch_clamps_timeout_below_minimum_to_five_seconds() {
+    let _guard = ENV_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    set_scenario("sleep", &dir.path().join("argv.log"));
+    let state = build_state(&dir);
+
+    with_server(state, |client| async move {
+        // `timeout_seconds=4` is below the documented 5s minimum. The tool
+        // clamps it up to 5 seconds rather than rejecting it (consistent with
+        // the existing `watch_max_secs` cap). The 2s termination grace makes a
+        // bare 4-vs-5 boundary assertion brittle, so we assert the result is a
+        // success (not rejected) that blocked for at least the 5s minimum.
+        let result = client
+            .call_tool(
+                CallToolRequestParams::new("mail_watch_messages")
+                    .with_arguments(args(json!({ "timeout_seconds": 4 }))),
+            )
+            .await
+            .unwrap();
+
+        let sc = result
+            .structured_content
+            .as_ref()
+            .expect("structured content");
+        assert_eq!(
+            sc["ok"], true,
+            "a sub-minimum timeout must be clamped, not rejected"
+        );
+        assert_eq!(sc["data"]["timed_out"], true);
+        assert_eq!(sc["data"]["count"], 0);
+        let elapsed_ms = sc["data"]["elapsed_ms"].as_u64().expect("elapsed_ms");
+        assert!(
+            elapsed_ms >= 5000,
+            "a 4s request must be clamped to the 5s minimum, got {elapsed_ms}ms"
         );
     })
     .await;
@@ -147,7 +197,7 @@ async fn watch_parses_ndjson_events() {
         let result = client
             .call_tool(
                 CallToolRequestParams::new("mail_watch_messages")
-                    .with_arguments(args(json!({ "timeout_seconds": 1 }))),
+                    .with_arguments(args(json!({ "timeout_seconds": 5 }))),
             )
             .await
             .unwrap();
@@ -199,7 +249,7 @@ async fn second_watch_returns_watch_busy() {
     let second = watch_messages(
         &state,
         WatchArgs {
-            timeout_seconds: Some(1),
+            timeout_seconds: Some(5),
             msg_format: None,
         },
     )
@@ -209,6 +259,46 @@ async fn second_watch_returns_watch_busy() {
     // Cancel the first watch; dropping its future kills the CLI process tree.
     first.abort();
     let _ = first.await;
+}
+
+#[tokio::test]
+async fn refresh_auth_during_watch_returns_watch_busy() {
+    let _guard = ENV_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("argv.log");
+    set_scenario("sleep", &log);
+    let state = build_state(&dir);
+
+    // Start a watch; it acquires the process-wide lock and blocks.
+    let watch_state = state.clone();
+    let watch = tokio::spawn(async move {
+        watch_messages(
+            &watch_state,
+            WatchArgs {
+                timeout_seconds: Some(30),
+                msg_format: None,
+            },
+        )
+        .await
+    });
+    wait_for_argv(&log, 1).await;
+
+    // A credential refresh during a watch must fail with WATCH_BUSY without
+    // spawning the refresh CLI (spec §8).
+    let result = refresh_auth(&state).await;
+    assert_eq!(result.unwrap_err().code(), "WATCH_BUSY");
+
+    // Only the watch's `message +watch` invocation happened; no `auth refresh`.
+    let calls = read_argv_log(&log);
+    assert_eq!(
+        calls.len(),
+        1,
+        "refresh must not invoke the CLI during a watch"
+    );
+    assert_eq!(calls[0], vec!["message".to_string(), "+watch".to_string()]);
+
+    watch.abort();
+    let _ = watch.await;
 }
 
 #[cfg(unix)]
@@ -232,7 +322,7 @@ async fn watch_timeout_kills_cli_tree() {
     let (data, _meta) = watch_messages(
         &state,
         WatchArgs {
-            timeout_seconds: Some(1),
+            timeout_seconds: Some(5),
             msg_format: None,
         },
     )

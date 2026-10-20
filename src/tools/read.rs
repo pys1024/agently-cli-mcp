@@ -216,12 +216,12 @@ pub async fn watch_messages(state: &AppState, args: WatchArgs) -> Result<(Value,
         .try_lock()
         .map_err(|_| AppError::WatchBusy("another mail watch is already running".to_string()))?;
 
-    // Default 30s, clamped to [1, watch_max_secs] (watch_max_secs is itself
-    // validated to 5..=120 by config).
+    // Default 30s, clamped to [5, watch_max_secs] (spec §5.1: timeout_seconds
+    // is 5..=120; watch_max_secs is itself validated to 5..=120 by config).
     let secs = args
         .timeout_seconds
         .unwrap_or(30)
-        .clamp(1, state.cfg.cli.watch_max_secs);
+        .clamp(5, state.cfg.cli.watch_max_secs);
 
     let mut argv = vec!["message".to_string(), "+watch".to_string()];
     if let Some(fmt) = args.msg_format {
