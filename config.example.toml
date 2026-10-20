@@ -1,0 +1,44 @@
+# agently-cli-mcp example configuration.
+#
+# Precedence (highest first):
+#   CLI flags > environment variables > this file > built-in defaults.
+#
+# Copy to ./config.toml in your project directory to use. Secrets (the HTTP
+# token) are intentionally NOT supported here: use --http-token /
+# AGENTLY_MCP_HTTP_TOKEN or --http-token-file instead.
+
+transport = "stdio"
+
+[cli]
+path = "agently-cli"
+# workdir = "/path/to/workspace"   # default: process CWD
+max_concurrency = 1
+timeout_secs = 30
+read_timeout_secs = 60
+send_timeout_secs = 60
+watch_max_secs = 120
+
+[confirm]
+mode = "elicit"
+ttl_secs = 300
+
+[search]
+ttl_secs = 600
+
+[limits]
+max_body_chars = 50000
+
+[logging]
+level = "info"
+format = "text"
+
+[tools]
+read_only = false
+disabled = []
+# allow = ["mail_list_messages", "mail_get_message"]
+
+[http]
+listen = "127.0.0.1:8787"
+allowed_hosts = ["localhost", "127.0.0.1", "::1"]
+cors_origins = []
+session_idle_secs = 300

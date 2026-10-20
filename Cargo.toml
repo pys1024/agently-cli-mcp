@@ -1,0 +1,54 @@
+[package]
+name = "agently-cli-mcp"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+
+[[bin]]
+name = "agently-cli-mcp"
+path = "src/main.rs"
+
+[lib]
+name = "agently_cli_mcp"
+path = "src/lib.rs"
+
+[features]
+default = []
+test-fixtures = []
+
+[[bin]]
+name = "fake-agently-cli"
+path = "tests/fixtures/fake_cli.rs"
+required-features = ["test-fixtures"]
+
+[dependencies]
+rmcp = { version = "=3.5.1", features = ["server", "macros", "schemars", "transport-io", "transport-streamable-http-server", "elicitation", "request-state"] }
+tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "process", "io-std", "io-util", "signal", "time", "sync", "fs", "net"] }
+axum = "0.8"
+clap = { version = "4.5", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+schemars = "1.2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
+tempfile = "3"
+sha2 = "0.10"
+tower = "0.5"
+subtle = "2"
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.30", features = ["signal", "process"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
+[dev-dependencies]
+rmcp = { version = "=3.5.1", features = ["client", "transport-streamable-http-client-reqwest"] }
+tokio = { version = "1.54", features = ["full"] }
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
