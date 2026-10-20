@@ -1,6 +1,6 @@
 //! Read tools: `message +list`, `message +read`, and `message +search`.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -47,6 +47,30 @@ pub struct SearchArgs {
     pub is_unread: Option<bool>,
     pub limit: Option<u32>,
     pub cursor: Option<String>,
+}
+
+/// Output format for `mail_watch_messages` events.
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum WatchFormat {
+    Full,
+    Event,
+}
+
+impl WatchFormat {
+    fn as_str(self) -> &'static str {
+        match self {
+            WatchFormat::Full => "full",
+            WatchFormat::Event => "event",
+        }
+    }
+}
+
+/// Arguments for `mail_watch_messages`.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct WatchArgs {
+    pub timeout_seconds: Option<u64>,
+    pub msg_format: Option<WatchFormat>,
 }
 
 pub async fn list_messages(state: &AppState, args: ListArgs) -> Result<(Value, Value), AppError> {
@@ -180,6 +204,51 @@ pub async fn search_messages(
     }
 
     Ok((data, read_meta(start)))
+}
+
+pub async fn watch_messages(state: &AppState, args: WatchArgs) -> Result<(Value, Value), AppError> {
+    let start = Instant::now();
+
+    // One watch at a time process-wide: a second concurrent call fails fast
+    // with WATCH_BUSY instead of queueing behind a long poll.
+    let _guard = state
+        .watch_lock
+        .try_lock()
+        .map_err(|_| AppError::WatchBusy("another mail watch is already running".to_string()))?;
+
+    // Default 30s, clamped to [1, watch_max_secs] (watch_max_secs is itself
+    // validated to 5..=120 by config).
+    let secs = args
+        .timeout_seconds
+        .unwrap_or(30)
+        .clamp(1, state.cfg.cli.watch_max_secs);
+
+    let mut argv = vec!["message".to_string(), "+watch".to_string()];
+    if let Some(fmt) = args.msg_format {
+        argv.push("--msg-format".to_string());
+        argv.push(fmt.as_str().to_string());
+    }
+
+    let output = state
+        .runner
+        .run_watch(&argv, Duration::from_secs(secs))
+        .await?;
+
+    let count = output.events.len();
+    let elapsed_ms = start.elapsed().as_millis();
+
+    let data = json!({
+        "events": output.events,
+        "count": count,
+        "timed_out": output.timed_out,
+        "elapsed_ms": elapsed_ms,
+    });
+    let meta = json!({
+        "untrusted_content": count > 0,
+        "security_notice": SECURITY_NOTICE,
+        "duration_ms": elapsed_ms,
+    });
+    Ok((data, meta))
 }
 
 fn read_meta(start: Instant) -> Value {

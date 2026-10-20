@@ -77,6 +77,10 @@ pub enum AppError {
     #[error("{0}")]
     SearchContextRequired(String),
 
+    /// Another watch is already running; the process-wide watch lock is held.
+    #[error("{0}")]
+    WatchBusy(String),
+
     /// A generic CLI failure with no more specific classification.
     #[error("{0}")]
     CliError(String),
@@ -103,6 +107,7 @@ impl AppError {
             AppError::PathOutsideWorkdir(_) => "PATH_OUTSIDE_WORKDIR",
             AppError::SearchContextMismatch(_) => "SEARCH_CONTEXT_MISMATCH",
             AppError::SearchContextRequired(_) => "SEARCH_CONTEXT_REQUIRED",
+            AppError::WatchBusy(_) => "WATCH_BUSY",
             AppError::CliError(_) => "CLI_ERROR",
         }
     }

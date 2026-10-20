@@ -76,6 +76,7 @@ fn hint(error: &AppError) -> &'static str {
         AppError::ConfirmationExpired(_) => "re-run the operation to get a fresh confirmation",
         AppError::SearchContextRequired(_) => "provide the full query, or use a fresh cursor",
         AppError::SearchContextMismatch(_) => "the supplied filters conflict with the cursor",
+        AppError::WatchBusy(_) => "wait for the current watch to finish, then call again",
         _ => "",
     }
 }

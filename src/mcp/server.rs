@@ -218,6 +218,22 @@ impl MailServer {
     }
 
     #[tool(
+        name = "mail_watch_messages",
+        title = "Wait for new mail",
+        description = "阻塞式等待新邮件。本次工具调用会挂起最多 `timeout_seconds` 秒（默认 30，上限 120），期间不会返回。收到新邮件或超时后返回 `events`、`count`、`timed_out`、`elapsed_ms`。这不是后台订阅；如需持续监听，请由 agent 在上一次返回后再次调用本工具。",
+        annotations(read_only_hint = true)
+    )]
+    async fn mail_watch_messages(
+        &self,
+        Parameters(args): Parameters<tools::read::WatchArgs>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        match tools::read::watch_messages(&self.state, args).await {
+            Ok((data, meta)) => Ok(result::ok("mail_watch_messages", data, meta).into()),
+            Err(e) => Ok(result::err("mail_watch_messages", &e).into()),
+        }
+    }
+
+    #[tool(
         name = "mail_download_attachment",
         title = "Download an attachment",
         description = "Download an attachment to a directory inside the working directory.",

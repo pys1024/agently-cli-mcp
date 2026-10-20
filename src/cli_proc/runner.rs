@@ -5,6 +5,9 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
+use serde_json::Value;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+
 use crate::cli_proc::locate;
 use crate::cli_proc::locate_windows::{self, CommandSpec};
 use crate::cli_proc::process;
@@ -21,6 +24,15 @@ pub struct Runner {
     /// Serializes non-watch CLI calls (spec §8: default concurrency 1). Sized
     /// from `CliConfig.max_concurrency`; shared across clones.
     semaphore: Arc<tokio::sync::Semaphore>,
+}
+
+/// Streaming output of a bounded [`Runner::run_watch`] invocation.
+#[derive(Debug, Clone)]
+pub struct WatchOutput {
+    /// NDJSON events parsed from stdout, in arrival order.
+    pub events: Vec<Value>,
+    /// Whether the process was still running and had to be killed at timeout.
+    pub timed_out: bool,
 }
 
 impl Runner {
@@ -68,6 +80,91 @@ impl Runner {
         timeout: Duration,
     ) -> Result<CliResult, AppError> {
         self.run_impl(args, timeout).await
+    }
+
+    /// Stream NDJSON from a long-running CLI until it exits or `timeout`
+    /// elapses, killing the whole process tree on timeout.
+    ///
+    /// Unlike [`Runner::run`], this does not take the concurrency permit (spec
+    /// §8: a watch must not block ordinary mail calls) and does not classify
+    /// output; the caller receives the raw parsed event stream plus a
+    /// timed-out flag.
+    pub async fn run_watch(
+        &self,
+        args: &[String],
+        timeout: Duration,
+    ) -> Result<WatchOutput, AppError> {
+        let mut cmd = match locate_windows::shape_command(&self.bin, args)? {
+            CommandSpec::Direct { program, args } => {
+                let mut cmd = tokio::process::Command::new(&program);
+                cmd.args(args);
+                cmd
+            }
+            CommandSpec::CmdExe { command } => {
+                let mut cmd = tokio::process::Command::new(comspec());
+                cmd.arg("/d").arg("/s").arg("/c").arg(command);
+                cmd
+            }
+        };
+        cmd.current_dir(&self.workdir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        process::configure(&mut cmd);
+
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| AppError::CliError(format!("failed to spawn CLI: {e}")))?;
+        let mut tree = process::ProcessTree::attach(&child)?;
+
+        let stdout = child.stdout.take().expect("stdout was piped");
+        let stderr = child.stderr.take().expect("stderr was piped");
+
+        // Drain stderr in the background so a chatty CLI never blocks on a full
+        // pipe and stalls the event stream.
+        let stderr_task = tokio::spawn(async move {
+            let mut buf = Vec::new();
+            let mut reader = BufReader::new(stderr);
+            let _ = AsyncReadExt::read_to_end(&mut reader, &mut buf).await;
+        });
+
+        let mut lines = BufReader::new(stdout).lines();
+        let mut events = Vec::new();
+        let mut timed_out = false;
+
+        let sleep = tokio::time::sleep(timeout);
+        tokio::pin!(sleep);
+
+        loop {
+            tokio::select! {
+                _ = &mut sleep => {
+                    timed_out = true;
+                    break;
+                }
+                line = lines.next_line() => match line {
+                    Ok(Some(text)) => {
+                        if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                            events.push(value);
+                        }
+                    }
+                    // EOF or a read error ends the stream: the child has
+                    // stopped producing events.
+                    Ok(None) | Err(_) => break,
+                },
+            }
+        }
+
+        if timed_out {
+            // Graceful SIGTERM -> 2s -> SIGKILL of the whole tree.
+            tree.terminate().await;
+        } else {
+            tree.disarm();
+        }
+        // Reap the child (avoid a zombie) and let the stderr drain finish.
+        let _ = child.wait().await;
+        let _ = stderr_task.await;
+
+        Ok(WatchOutput { events, timed_out })
     }
 
     /// Shared spawn/reap body used by both [`Runner::run`] and
