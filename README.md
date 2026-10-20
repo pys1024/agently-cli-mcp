@@ -333,7 +333,7 @@ make dist-all  # cross-compile all five targets with cargo-zigbuild into dist/
 | `linux-arm64` | `aarch64-unknown-linux-musl` |
 | `darwin-x86_64` | `x86_64-apple-darwin` |
 | `darwin-arm64` | `aarch64-apple-darwin` |
-| `windows-x86_64` | `x86_64-pc-windows-gnu` |
+| `windows-x86_64` | `x86_64-pc-windows-msvc` |
 
 Prerequisites:
 
@@ -341,9 +341,10 @@ Prerequisites:
 rustup target add \
   x86_64-unknown-linux-musl aarch64-unknown-linux-musl \
   x86_64-apple-darwin aarch64-apple-darwin \
-  x86_64-pc-windows-gnu
+  x86_64-pc-windows-msvc
 
-cargo install cargo-zigbuild --locked
+cargo install cargo-zigbuild --locked   # Linux/macOS targets
+cargo install cargo-xwin --locked       # Windows MSVC target
 # zig must be on PATH
 ```
 
@@ -372,14 +373,14 @@ dist/agently-cli-mcp-x86_64-unknown-linux-musl.tar.gz
 dist/agently-cli-mcp-aarch64-unknown-linux-musl.tar.gz
 dist/agently-cli-mcp-x86_64-apple-darwin.tar.gz
 dist/agently-cli-mcp-aarch64-apple-darwin.tar.gz
-dist/agently-cli-mcp-x86_64-pc-windows-gnu.zip
+dist/agently-cli-mcp-x86_64-pc-windows-msvc.zip
 dist/checksums.txt
 ```
 
-> The local cross-build uses the **GNU** Windows target because that is what
-> `cargo-zigbuild` can link from any host. Official GitHub releases are still
-> built on native runners and use **MSVC** (`x86_64-pc-windows-msvc`, static
-> CRT). Do not mix the two archive names in one release.
+> Windows uses **MSVC** via `cargo-xwin` with the static CRT
+> (`+crt-static`), matching the official release. Linux/macOS targets use
+> `cargo-zigbuild`. The resulting Windows binary has no VC++ Redistributable
+> dependency.
 
 ### Live smoke test
 

@@ -7,12 +7,14 @@
 #   linux-arm64     aarch64-unknown-linux-musl
 #   darwin-x86_64   x86_64-apple-darwin
 #   darwin-arm64    aarch64-apple-darwin
-#   windows-x86_64  x86_64-pc-windows-gnu
+#   windows-x86_64  x86_64-pc-windows-msvc
 #
 # Prerequisites:
 #   - Rust toolchain with the target std libraries installed
-#   - cargo-zigbuild (cargo install cargo-zigbuild --locked)
-#   - zig on PATH
+#   - cargo-zigbuild + zig for Linux/macOS targets
+#     (cargo install cargo-zigbuild --locked; zig on PATH)
+#   - cargo-xwin for the Windows MSVC target
+#     (cargo install cargo-xwin --locked)
 #   - macOS SDK for darwin targets: SDKROOT / DARWIN_SDK, or ~/MacOSX.sdk
 #     (zig does not bundle Apple's SDK)
 #
@@ -28,9 +30,10 @@
 #   dist/agently-cli-mcp-<triple>.tar.gz|.zip
 #   dist/checksums.txt
 #
-# Official GitHub releases are still built on native runners (Windows uses
-# MSVC). This script is the local/one-host cross-build path and therefore
-# uses the GNU Windows target, which cargo-zigbuild can link from any host.
+# Linux/macOS targets are linked with cargo-zigbuild. The Windows target is
+# MSVC and is linked with cargo-xwin, matching the official release target.
+# The MSVC build uses the static CRT (`+crt-static`), so no VC++ Redistributable
+# is required.
 
 set -euo pipefail
 
@@ -110,7 +113,7 @@ target_triple() {
     linux-arm64)    printf '%s' "aarch64-unknown-linux-musl" ;;
     darwin-x86_64)  printf '%s' "x86_64-apple-darwin" ;;
     darwin-arm64)   printf '%s' "aarch64-apple-darwin" ;;
-    windows-x86_64) printf '%s' "x86_64-pc-windows-gnu" ;;
+    windows-x86_64) printf '%s' "x86_64-pc-windows-msvc" ;;
     *) return 1 ;;
   esac
 }
@@ -190,20 +193,37 @@ resolve_targets "$TARGETS"
 
 command -v rustc >/dev/null 2>&1 || die "rustc is not on PATH"
 command -v cargo >/dev/null 2>&1 || die "cargo is not on PATH"
-command -v zig >/dev/null 2>&1 || die "zig is not on PATH (install it and re-run)"
 
-if ! cargo zigbuild --help >/dev/null 2>&1; then
-  die "cargo-zigbuild is not installed (run: cargo install cargo-zigbuild --locked)"
+NEEDS_WINDOWS=0
+NEEDS_ZIGBUILD=0
+for item in $SELECTED; do
+  case "$item" in
+    windows-*) NEEDS_WINDOWS=1 ;;
+    *) NEEDS_ZIGBUILD=1 ;;
+  esac
+done
+
+if [ "$NEEDS_ZIGBUILD" = 1 ]; then
+  command -v zig >/dev/null 2>&1 || die "zig is not on PATH (install it and re-run)"
+  if ! cargo zigbuild --help >/dev/null 2>&1; then
+    die "cargo-zigbuild is not installed (run: cargo install cargo-zigbuild --locked)"
+  fi
 fi
 
-ZB_VERSION="$(cargo install --list 2>/dev/null | awk '/^cargo-zigbuild / {print $2; exit}' | sed 's/^v//')"
-ZIG_VERSION="$(zig version 2>/dev/null || true)"
-if [ "$ZB_VERSION" = "0.23.4" ] && [ -n "$ZIG_VERSION" ] && ver_ge "$ZIG_VERSION" "0.16.0"; then
-  die "cargo-zigbuild 0.23.4 has a known Darwin linking regression with zig >= 0.16.0.
-       Install a fixed cargo-zigbuild first:
-         cargo install cargo-zigbuild --version 0.23.3 --locked
-       or the upstream fix:
-         cargo install --git https://github.com/rust-cross/cargo-zigbuild --locked cargo-zigbuild"
+if [ "$NEEDS_WINDOWS" = 1 ] && ! cargo xwin build --help >/dev/null 2>&1; then
+  die "cargo-xwin is not installed (run: cargo install cargo-xwin --locked)"
+fi
+
+if [ "$NEEDS_ZIGBUILD" = 1 ]; then
+  ZB_VERSION="$(cargo install --list 2>/dev/null | awk '/^cargo-zigbuild / {print $2; exit}' | sed 's/^v//')"
+  ZIG_VERSION="$(zig version 2>/dev/null || true)"
+  if [ "$ZB_VERSION" = "0.23.4" ] && [ -n "$ZIG_VERSION" ] && ver_ge "$ZIG_VERSION" "0.16.0"; then
+    die "cargo-zigbuild 0.23.4 has a known Darwin linking regression with zig >= 0.16.0.
+         Install a fixed cargo-zigbuild first:
+           cargo install cargo-zigbuild --version 0.23.3 --locked
+         or the upstream fix:
+           cargo install --git https://github.com/rust-cross/cargo-zigbuild --locked cargo-zigbuild"
+  fi
 fi
 
 if command -v rustup >/dev/null 2>&1; then
@@ -284,8 +304,16 @@ for item in $SELECTED; do
     build_args="$build_args --jobs $JOBS"
   fi
 
+  # Linux/macOS use cargo-zigbuild; Windows MSVC uses cargo-xwin and the
+  # static CRT, matching the official release configuration.
   # shellcheck disable=SC2086
-  if ! cargo zigbuild $build_args; then
+  if [ "$NEEDS_WINDOWS" = 1 ] && case "$item" in windows-*) true ;; *) false ;; esac; then
+    if ! RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C target-feature=+crt-static" cargo xwin build $build_args; then
+      FAILED="$FAILED $item"
+      warn "build failed for $item; continuing with remaining targets"
+      continue
+    fi
+  elif ! cargo zigbuild $build_args; then
     FAILED="$FAILED $item"
     warn "build failed for $item; continuing with remaining targets"
     continue
