@@ -306,9 +306,11 @@ for item in $SELECTED; do
 
   # Linux/macOS use cargo-zigbuild; Windows MSVC uses cargo-xwin and the
   # static CRT, matching the official release configuration.
+  # /ignore:4099 silences LNK4099: the MSVC static libs (libcmt/libvcruntime)
+  # carry debug-info references to PDBs that are not shipped with the SDK.
   # shellcheck disable=SC2086
   if [ "$NEEDS_WINDOWS" = 1 ] && case "$item" in windows-*) true ;; *) false ;; esac; then
-    if ! RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C target-feature=+crt-static" cargo xwin build $build_args; then
+    if ! RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C target-feature=+crt-static -C link-arg=/ignore:4099" cargo xwin build $build_args; then
       FAILED="$FAILED $item"
       warn "build failed for $item; continuing with remaining targets"
       continue

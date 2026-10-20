@@ -60,8 +60,10 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
         env:
           # Static CRT on Windows MSVC so the binary has no VC++ Redistributable
-          # dependency. Harmless on other platforms.
-          RUSTFLAGS: ${{ matrix.archive_ext == 'zip' && '-C target-feature=+crt-static' || '' }}
+          # dependency. `/ignore:4099` silences LNK4099 from MSVC static libs
+          # whose PDB debug-info references are not shipped with the SDK.
+          # Harmless on other platforms.
+          RUSTFLAGS: ${{ matrix.archive_ext == 'zip' && '-C target-feature=+crt-static -C link-arg=/ignore:4099' || '' }}
 
       - name: Strip binary (non-Windows)
         if: matrix.archive_ext == 'tar.gz'
