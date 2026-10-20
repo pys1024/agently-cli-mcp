@@ -15,6 +15,8 @@ use std::time::Duration;
 const CONFIRM_ENVELOPE: &str = r#"{"ok":true,"data":{"confirmation_required":true,"confirmation_token":"ctk_test","summary":{"action":"send"}}}"#;
 const SUCCESS_LIST: &str =
     r#"{"ok":true,"data":{"messages":[{"message_id":"msg_1"},{"message_id":"msg_2"}]}}"#;
+const SEARCH_PAGE: &str =
+    r#"{"ok":true,"data":{"messages":[{"message_id":"msg_1"}],"next_cursor":"cur_1"}}"#;
 const QUEUED: &str = r#"{"ok":true,"data":{"queued":true}}"#;
 const ERROR_404: &str =
     r#"{"ok":false,"error":{"type":"api_error","code":404,"message":"Resource not found"}}"#;
@@ -47,6 +49,16 @@ fn main() {
     match scenario.as_str() {
         "success_list" => {
             println!("{SUCCESS_LIST}");
+            exit(0);
+        }
+        "success_read" => {
+            // A long body so tests can exercise `max_body_chars` truncation.
+            let body = "x".repeat(4096);
+            println!(r#"{{"ok":true,"data":{{"id":"msg_1","subject":"Hello","body":"{body}"}}}}"#);
+            exit(0);
+        }
+        "search_page" => {
+            println!("{SEARCH_PAGE}");
             exit(0);
         }
         "confirm_send" => {

@@ -5,4 +5,6 @@ pub mod confirm;
 pub mod error;
 pub mod guard;
 pub mod logging;
+pub mod mcp;
 pub mod search;
+pub mod tools;
