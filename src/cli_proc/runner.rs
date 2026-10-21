@@ -100,11 +100,7 @@ impl Runner {
                 cmd.args(args);
                 cmd
             }
-            CommandSpec::CmdExe { command } => {
-                let mut cmd = tokio::process::Command::new(comspec());
-                cmd.arg("/d").arg("/s").arg("/c").arg(command);
-                cmd
-            }
+            CommandSpec::CmdExe { command } => cmd_exe(comspec(), command),
         };
         cmd.current_dir(&self.workdir)
             .stdin(Stdio::null())
@@ -196,11 +192,7 @@ impl Runner {
                 cmd.args(args);
                 cmd
             }
-            CommandSpec::CmdExe { command } => {
-                let mut cmd = tokio::process::Command::new(comspec());
-                cmd.arg("/d").arg("/s").arg("/c").arg(command);
-                cmd
-            }
+            CommandSpec::CmdExe { command } => cmd_exe(comspec(), command),
         };
         cmd.current_dir(&self.workdir)
             .stdin(Stdio::null())
@@ -274,9 +266,70 @@ impl Runner {
     }
 }
 
+/// Build a `cmd.exe /d /s /c` invocation.
+///
+/// The command string is already fully quoted for `cmd.exe`. On Windows it must
+/// be appended with `raw_arg`: Rust's normal argument quoting would escape the
+/// embedded quotes with backslashes, producing a command such as
+/// `\\C:\...\agently-cli.cmd\" \"message\"`, which `cmd.exe` rejects.
+fn cmd_exe(comspec: PathBuf, command: String) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(comspec);
+    cmd.arg("/d").arg("/s").arg("/c");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.as_std_mut().raw_arg(&command);
+    }
+    #[cfg(not(windows))]
+    {
+        cmd.arg(&command);
+    }
+    cmd
+}
+
 /// Resolve `cmd.exe` for the batch-script fallback, honoring `%COMSPEC%`.
 fn comspec() -> PathBuf {
     std::env::var_os("COMSPEC")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("cmd.exe"))
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use std::process::Stdio;
+
+    #[tokio::test]
+    async fn cmd_exe_raw_arg_preserves_script_and_args() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("echo args.cmd");
+        std::fs::write(
+            &script,
+            "@echo off\r\n:loop\r\nif \"%~1\"==\"\" goto end\r\necho [%~1]\r\nshift\r\ngoto loop\r\n:end\r\n",
+        )
+        .unwrap();
+
+        let spec = crate::cli_proc::locate_windows::shape_command(
+            &script,
+            &["+list".to_string(), "INBOX".to_string()],
+        )
+        .unwrap();
+        let CommandSpec::CmdExe { command } = spec else {
+            panic!("expected CmdExe fallback, got {spec:?}");
+        };
+
+        let mut cmd = cmd_exe(comspec(), command);
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let output = cmd.output().await.unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert!(
+            output.status.success(),
+            "cmd.exe failed: status={:?} stdout={stdout} stderr={stderr}",
+            output.status
+        );
+        assert!(stdout.contains("[+list]"), "stdout: {stdout}");
+        assert!(stdout.contains("[INBOX]"), "stdout: {stdout}");
+    }
 }

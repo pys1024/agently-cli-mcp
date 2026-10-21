@@ -82,17 +82,40 @@ pub fn resolve_real_program(shim: &Path) -> Option<ResolvedProgram> {
     ];
 
     for root in roots {
+        // Hoisted platform package: <root>/@tencent-qqmail/agently-cli-<os>-<arch>
         for pkg in platform_package_names() {
-            let pkg_root = root.join(&pkg);
-            let exe = pkg_root.join("bin").join(&exe_name);
-            if exe.is_file() {
-                return Some(ResolvedProgram::Exe(canonical(&exe)));
-            }
-            let run_js = pkg_root.join("scripts").join("run.js");
-            if run_js.is_file() {
-                return Some(ResolvedProgram::Node(canonical(&run_js)));
+            if let Some(program) = probe_package(&root.join(&pkg), &exe_name) {
+                return Some(program);
             }
         }
+
+        // The npm main package itself: <root>/@tencent-qqmail/agently-cli.
+        // It always has scripts/run.js; some npm layouts also nest the platform
+        // package under the main package's own node_modules.
+        let main_pkg = root.join("@tencent-qqmail").join("agently-cli");
+        if let Some(program) = probe_package(&main_pkg, &exe_name) {
+            return Some(program);
+        }
+        for pkg in platform_package_names() {
+            if let Some(program) =
+                probe_package(&main_pkg.join("node_modules").join(&pkg), &exe_name)
+            {
+                return Some(program);
+            }
+        }
+    }
+    None
+}
+
+/// Probe one package directory for a real platform executable or `run.js`.
+fn probe_package(pkg_root: &Path, exe_name: &str) -> Option<ResolvedProgram> {
+    let exe = pkg_root.join("bin").join(exe_name);
+    if exe.is_file() {
+        return Some(ResolvedProgram::Exe(canonical(&exe)));
+    }
+    let run_js = pkg_root.join("scripts").join("run.js");
+    if run_js.is_file() {
+        return Some(ResolvedProgram::Node(canonical(&run_js)));
     }
     None
 }
@@ -309,6 +332,59 @@ mod tests {
                 assert!(command.contains("\"a\"\"b\""));
             }
             other => panic!("expected CmdExe, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cmd_shim_resolves_main_package_run_js() {
+        let dir = tempfile::tempdir().unwrap();
+        let shim = dir.path().join("node_modules/.bin/agently-cli.cmd");
+        std::fs::create_dir_all(shim.parent().unwrap()).unwrap();
+        std::fs::write(&shim, "@echo off\n").unwrap();
+
+        let run_js = dir
+            .path()
+            .join("node_modules/@tencent-qqmail/agently-cli/scripts/run.js");
+        std::fs::create_dir_all(run_js.parent().unwrap()).unwrap();
+        std::fs::write(&run_js, "// run\n").unwrap();
+
+        match shape_command(&shim, &["+list".to_string()]).unwrap() {
+            CommandSpec::Direct { program, args } => {
+                assert_eq!(program, PathBuf::from("node"));
+                assert_eq!(
+                    args,
+                    vec![run_js.to_string_lossy().into_owned(), "+list".to_string()]
+                );
+            }
+            other => panic!("expected Direct node, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cmd_shim_resolves_nested_platform_package() {
+        let dir = tempfile::tempdir().unwrap();
+        let shim = dir.path().join("node_modules/.bin/agently-cli.cmd");
+        std::fs::create_dir_all(shim.parent().unwrap()).unwrap();
+        std::fs::write(&shim, "@echo off\n").unwrap();
+
+        let pkg = platform_package_names()[0].clone();
+        let exe = dir
+            .path()
+            .join("node_modules/@tencent-qqmail/agently-cli/node_modules")
+            .join(&pkg)
+            .join("bin")
+            .join(platform_exe_name());
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::write(&exe, "").unwrap();
+
+        match shape_command(&shim, &["+list".to_string()]).unwrap() {
+            CommandSpec::Direct { program, .. } => {
+                assert_eq!(
+                    std::fs::canonicalize(&program).unwrap(),
+                    std::fs::canonicalize(&exe).unwrap()
+                );
+            }
+            other => panic!("expected Direct, got {other:?}"),
         }
     }
 

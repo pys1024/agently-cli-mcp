@@ -834,7 +834,8 @@ fn validate_id(id: &str) -> Result<(), AppError> {
 }
 
 fn parse_body_format(fmt: Option<&str>) -> Result<BodyFormat, AppError> {
-    match fmt.unwrap_or("plain") {
+    let fmt = fmt.unwrap_or("plain").to_ascii_lowercase();
+    match fmt.as_str() {
         "plain" => Ok(BodyFormat::Plain),
         "html" => Ok(BodyFormat::Html),
         "markdown" => Ok(BodyFormat::Markdown),
@@ -926,4 +927,25 @@ async fn read_source(state: &AppState, id: &str) -> Option<SourceMessage> {
 fn push_pair(argv: &mut Vec<String>, flag: &str, value: &str) {
     argv.push(flag.to_string());
     argv.push(value.to_string());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn body_format_is_case_insensitive() {
+        assert_eq!(parse_body_format(Some("HTML")).unwrap(), BodyFormat::Html);
+        assert_eq!(
+            parse_body_format(Some("Markdown")).unwrap(),
+            BodyFormat::Markdown
+        );
+        assert_eq!(parse_body_format(None).unwrap(), BodyFormat::Plain);
+    }
+
+    #[test]
+    fn unknown_body_format_is_rejected() {
+        let err = parse_body_format(Some("rtf")).unwrap_err();
+        assert_eq!(err.code(), "INVALID_ARGUMENT");
+    }
 }

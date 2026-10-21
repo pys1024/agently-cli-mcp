@@ -77,8 +77,9 @@ pub async fn list_messages(state: &AppState, args: ListArgs) -> Result<(Value, V
     let start = Instant::now();
     state.seed_limits().await?;
 
+    let dir = normalize_dir(args.dir.as_deref())?;
     let mut argv = vec!["message".to_string(), "+list".to_string()];
-    push_opt(&mut argv, "--dir", args.dir.as_ref());
+    push_opt(&mut argv, "--dir", dir.as_ref());
     if let Some(limit) = args.limit {
         push_pair(&mut argv, "--limit", &limit.to_string());
     }
@@ -146,7 +147,7 @@ pub async fn search_messages(
 
     let provided = SearchQuery {
         q: args.q.clone(),
-        search_in: args.search_in.clone(),
+        search_in: normalize_search_in(args.search_in.as_deref())?,
         from: args.from.clone(),
         to: args.to.clone(),
         dir: args.dir.clone(),
@@ -251,6 +252,37 @@ pub async fn watch_messages(state: &AppState, args: WatchArgs) -> Result<(Value,
     Ok((data, meta))
 }
 
+/// Normalize a folder name to the CLI's lowercase enum. Clients often send
+/// `INBOX` / `Inbox`; the CLI expects `inbox`.
+fn normalize_dir(dir: Option<&str>) -> Result<Option<String>, AppError> {
+    let Some(dir) = dir else { return Ok(None) };
+    let lower = dir.to_ascii_lowercase();
+    match lower.as_str() {
+        "inbox" | "sent" | "trash" | "spam" => Ok(Some(lower)),
+        other => Err(AppError::InvalidArgument(format!(
+            "unknown dir `{other}` (expected inbox, sent, trash, or spam)"
+        ))),
+    }
+}
+
+/// Normalize `search_in` to the CLI's canonical enum. Accepts both
+/// `SEARCH_IN_SUBJECT` and `subject` (case-insensitive).
+fn normalize_search_in(value: Option<&str>) -> Result<Option<String>, AppError> {
+    let Some(value) = value else { return Ok(None) };
+    let upper = value.to_ascii_uppercase();
+    let canonical = match upper.as_str() {
+        "SEARCH_IN_ALL" | "ALL" => "SEARCH_IN_ALL",
+        "SEARCH_IN_SUBJECT" | "SUBJECT" => "SEARCH_IN_SUBJECT",
+        "SEARCH_IN_CONTENT" | "CONTENT" => "SEARCH_IN_CONTENT",
+        other => {
+            return Err(AppError::InvalidArgument(format!(
+                "unknown search_in `{other}` (expected SEARCH_IN_ALL, SEARCH_IN_SUBJECT, or SEARCH_IN_CONTENT)"
+            )));
+        }
+    };
+    Ok(Some(canonical.to_string()))
+}
+
 fn read_meta(start: Instant) -> Value {
     json!({
         "untrusted_content": true,
@@ -274,5 +306,52 @@ fn push_opt(argv: &mut Vec<String>, flag: &str, value: Option<&String>) {
 fn push_bool(argv: &mut Vec<String>, flag: &str, value: Option<bool>) {
     if value == Some(true) {
         argv.push(flag.to_string());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dir_is_case_insensitive() {
+        assert_eq!(
+            normalize_dir(Some("INBOX")).unwrap(),
+            Some("inbox".to_string())
+        );
+        assert_eq!(
+            normalize_dir(Some("Trash")).unwrap(),
+            Some("trash".to_string())
+        );
+        assert_eq!(normalize_dir(None).unwrap(), None);
+    }
+
+    #[test]
+    fn unknown_dir_is_rejected() {
+        let err = normalize_dir(Some("archive")).unwrap_err();
+        assert_eq!(err.code(), "INVALID_ARGUMENT");
+    }
+
+    #[test]
+    fn search_in_accepts_canonical_and_short_forms() {
+        assert_eq!(
+            normalize_search_in(Some("subject")).unwrap(),
+            Some("SEARCH_IN_SUBJECT".to_string())
+        );
+        assert_eq!(
+            normalize_search_in(Some("SEARCH_IN_CONTENT")).unwrap(),
+            Some("SEARCH_IN_CONTENT".to_string())
+        );
+        assert_eq!(
+            normalize_search_in(Some("all")).unwrap(),
+            Some("SEARCH_IN_ALL".to_string())
+        );
+        assert_eq!(normalize_search_in(None).unwrap(), None);
+    }
+
+    #[test]
+    fn unknown_search_in_is_rejected() {
+        let err = normalize_search_in(Some("headers")).unwrap_err();
+        assert_eq!(err.code(), "INVALID_ARGUMENT");
     }
 }
