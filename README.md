@@ -207,6 +207,10 @@ If a token is configured, send `Authorization: Bearer <token>`.
 
 - The official Windows release is MSVC. It uses the static CRT, so no VC++
   Redistributable is required.
+- `agently-cli.cmd` npm shims are supported. The server prefers the real
+  platform `.exe` or `node run.js`; if it must fall back to
+  `cmd.exe /d /s /c`, arguments are passed with raw Windows quoting so paths
+  containing spaces and normal CLI flags are preserved.
 - If you build locally with `scripts/build.sh`, Windows also uses MSVC via
   `cargo-xwin`; Linux/macOS use `cargo-zigbuild`.
 
@@ -325,12 +329,14 @@ All file paths are resolved against the configured work directory.
 
 ### Common conventions
 
-- `dir` values: `inbox`, `sent`, `trash`, `spam`.
+- `dir` values: `inbox`, `sent`, `trash`, `spam` (case-insensitive; `INBOX` is accepted and normalized).
 - `limit`: 1–50. CLI default is 10.
 - `after` / `before`: ISO 8601 timestamps.
 - `cursor`: opaque value from the previous response.
 - `msg_...` = message ID; `att_...` = attachment ID.
 - `body` and `body_file` are mutually exclusive.
+- `body_format` is case-insensitive (`HTML` works).
+- `search_in` accepts both `SEARCH_IN_SUBJECT` and `subject` (case-insensitive).
 - `body_file`, `attachments`, and `output` must be inside the workdir.
 
 ---

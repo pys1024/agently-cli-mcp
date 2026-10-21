@@ -312,3 +312,41 @@ async fn tool_error_message_redacts_ctk_token() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn list_normalizes_uppercase_dir_before_invoking_cli() {
+    let _guard = ENV_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("argv.log");
+    set_scenario("success_list", &log);
+    let state = build_state(&dir);
+
+    with_server(state, |client| async move {
+        let result = client
+            .call_tool(
+                CallToolRequestParams::new("mail_list_messages")
+                    .with_arguments(args(json!({ "dir": "INBOX", "limit": 5 }))),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.structured_content.as_ref().unwrap()["ok"], true);
+
+        let calls = read_argv_log(&log);
+        let list_call = calls
+            .iter()
+            .find(|call| call.first().map(String::as_str) == Some("message"))
+            .expect("the list invocation must be logged");
+        assert_eq!(
+            list_call,
+            &vec![
+                "message".to_string(),
+                "+list".to_string(),
+                "--dir".to_string(),
+                "inbox".to_string(),
+                "--limit".to_string(),
+                "5".to_string(),
+            ]
+        );
+    })
+    .await;
+}
