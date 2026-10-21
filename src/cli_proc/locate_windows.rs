@@ -111,11 +111,11 @@ pub fn resolve_real_program(shim: &Path) -> Option<ResolvedProgram> {
 fn probe_package(pkg_root: &Path, exe_name: &str) -> Option<ResolvedProgram> {
     let exe = pkg_root.join("bin").join(exe_name);
     if exe.is_file() {
-        return Some(ResolvedProgram::Exe(canonical(&exe)));
+        return Some(ResolvedProgram::Exe(clean_path(&exe)));
     }
     let run_js = pkg_root.join("scripts").join("run.js");
     if run_js.is_file() {
-        return Some(ResolvedProgram::Node(canonical(&run_js)));
+        return Some(ResolvedProgram::Node(clean_path(&run_js)));
     }
     None
 }
@@ -123,6 +123,26 @@ fn probe_package(pkg_root: &Path, exe_name: &str) -> Option<ResolvedProgram> {
 /// Normalize a resolved path, collapsing `..`/symlinks when possible.
 fn canonical(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Strip Windows' verbatim (`\\?\`) prefix.
+///
+/// `canonicalize` on Windows returns `\\?\C:\...`; Node does not accept
+/// that form as a script path, and `cmd.exe` is happier without it. UNC paths
+/// are converted back to the normal `\\server\share\...` form.
+fn clean_path(path: &Path) -> PathBuf {
+    let path = canonical(path);
+    #[cfg(windows)]
+    {
+        let s = path.to_string_lossy();
+        if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{rest}"));
+        }
+        if let Some(rest) = s.strip_prefix(r"\\?\") {
+            return PathBuf::from(rest);
+        }
+    }
+    path
 }
 
 /// Shape a CLI invocation into the concrete program/argv to execute.
@@ -333,6 +353,19 @@ mod tests {
             }
             other => panic!("expected CmdExe, got {other:?}"),
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn strips_verbatim_windows_prefix() {
+        assert_eq!(
+            clean_path(Path::new(r"\\?\C:\Users\me\run.js")),
+            PathBuf::from(r"C:\Users\me\run.js")
+        );
+        assert_eq!(
+            clean_path(Path::new(r"\\?\UNC\server\share\run.js")),
+            PathBuf::from(r"\\server\share\run.js")
+        );
     }
 
     #[test]
